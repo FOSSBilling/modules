@@ -27,6 +27,10 @@ To add a new module to this repository:
 
 ## Module Structure Requirements
 
+> **Tip:** You can use the templates in `.github/` as a starting point:
+> - [MODULE_TEMPLATE.md](.github/MODULE_TEMPLATE.md) for README.md
+> - [CHANGELOG_TEMPLATE.md](.github/CHANGELOG_TEMPLATE.md) for CHANGELOG.md
+
 Each module directory must include:
 
 ### Required Files
