@@ -1,19 +1,27 @@
 """Build the extensions API content payload for one release.
 
-Reads <extension_id>/fossbilling.json plus the extension README, resolves
-the download URL from the GitHub release's .zip asset (unless the manifest
-overrides it), and writes the API content object to payload.json.
+Reads the package's manifest.json (v1 spec, see manifest.schema.json),
+plus the package README, resolves the download URL from the GitHub
+release's .zip asset, and writes the API content object to payload.json.
+
+The catalogue API speaks its own type vocabulary, so the manifest type is
+translated here ("module" -> "mod"); unknown types fail loudly rather than
+being passed through.
 
 Usage: build_payload.py <extension_id> <version> <tag>
 """
 
 import json
 import os
+import re
 import subprocess
 import sys
 
 
 MAX_CONTENT_BYTES = 256 * 1024
+
+# Manifest (manifest.json v1) type -> catalogue API type.
+TYPE_MAP = {"module": "mod"}
 
 
 def fail(message: str) -> None:
@@ -21,24 +29,88 @@ def fail(message: str) -> None:
     sys.exit(1)
 
 
+def find_package_dir(ext_id: str) -> str:
+    """Locate the package directory by manifest id (directory names are
+    Ucfirst while ids - and therefore tags - are lowercase)."""
+    matches = []
+    for entry in sorted(os.listdir(".")):
+        manifest = os.path.join(entry, "manifest.json")
+        if not os.path.isdir(entry) or not os.path.isfile(manifest):
+            continue
+        try:
+            meta = json.load(open(manifest))
+        except ValueError:
+            fail(f"{manifest} is not valid JSON")
+        if isinstance(meta, dict) and meta.get("id") == ext_id:
+            matches.append(entry)
+    if not matches:
+        fail(f"No package with manifest id '{ext_id}' found")
+    if len(matches) > 1:
+        fail(f"Multiple packages claim manifest id '{ext_id}': {', '.join(matches)}")
+    return matches[0]
+
+
+def min_core_version(constraint: object, manifest_path: str) -> str:
+    """Reduce a `requires.fossbilling` constraint to the plain minimum
+    version the catalogue release record expects. Only simple >= pins are
+    accepted; anything fancier must be resolved by hand before releasing."""
+    if not isinstance(constraint, str):
+        fail(f"{manifest_path} requires.fossbilling must be a version constraint string")
+    match = re.fullmatch(r">=\s*(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)", constraint.strip())
+    if not match:
+        fail(
+            f"{manifest_path} requires.fossbilling must be a simple '>=X.Y.Z' constraint "
+            f"to publish, got {constraint!r}"
+        )
+    return match.group(1)
+
+
 def main() -> None:
     ext_id, version, tag = sys.argv[1], sys.argv[2], sys.argv[3]
-    meta_path = os.path.join(ext_id, "fossbilling.json")
-    if not os.path.isfile(meta_path):
-        fail(f"{meta_path} not found")
+    ext_dir = find_package_dir(ext_id)
+    manifest_path = os.path.join(ext_dir, "manifest.json")
+    meta = json.load(open(manifest_path))
 
-    meta = json.load(open(meta_path))
     for field in (
+        "manifest_version",
         "type",
+        "id",
         "name",
+        "version",
         "description",
-        "website",
+        "author",
         "license",
-        "source",
-        "min_fossbilling_version",
+        "homepage_url",
+        "requires",
     ):
         if field not in meta:
-            fail(f"{meta_path} is missing required field '{field}'")
+            fail(f"{manifest_path} is missing required field '{field}'")
+    if meta["manifest_version"] != 1:
+        fail(f"{manifest_path} uses unsupported manifest_version {meta['manifest_version']!r} (this script handles v1)")
+    if not isinstance(meta.get("author"), dict) or not meta["author"].get("name"):
+        fail(f"{manifest_path} author must be an object with a name")
+    if not isinstance(meta.get("requires"), dict):
+        fail(f"{manifest_path} requires must be an object")
+    if not isinstance(meta["requires"].get("fossbilling"), str):
+        fail(f"{manifest_path} requires.fossbilling must be a version constraint string")
+
+    if meta["type"] not in TYPE_MAP:
+        fail(f"{manifest_path} has unsupported type {meta['type']!r} for catalogue submission")
+    if meta["version"] != version:
+        fail(f"{manifest_path} version {meta['version']!r} does not match release tag version {version!r}")
+
+    requires = meta["requires"]
+    min_version = min_core_version(requires["fossbilling"], manifest_path)
+
+    readme_path = os.path.join(ext_dir, "README.md")
+    if os.path.isfile(readme_path):
+        readme = open(readme_path).read()
+        if not readme.strip():
+            fail(f"{readme_path} is empty")
+    else:
+        readme = meta["description"]
+    if not readme.strip():
+        fail(f"{manifest_path} has an empty description and no README.md to fall back on")
 
     release = json.loads(
         subprocess.run(
@@ -51,50 +123,46 @@ def main() -> None:
     published_at = release.get("published_at") or release.get("created_at")
     html_url = release.get("html_url")
 
-    download_url = meta.get("download_url")
-    if download_url:
-        download_url = download_url.replace("{tag}", tag).replace("{version}", version)
-    else:
-        zips = [
-            a["browser_download_url"]
-            for a in release.get("assets", [])
-            if a.get("name", "").endswith(".zip")
-        ]
-        if not zips:
-            fail("Release has no .zip asset and fossbilling.json sets no download_url")
-        download_url = zips[0]
-
-    readme_file = meta.get("readme_file", "README.md")
-    readme_path = os.path.join(ext_id, readme_file)
-    if not os.path.isfile(readme_path):
-        fail(f"{readme_path} not found")
-    readme = open(readme_path).read()
-    if not readme.strip():
-        fail(f"{readme_path} is empty")
+    zips = [
+        a["browser_download_url"]
+        for a in release.get("assets", [])
+        if a.get("name", "").endswith(".zip")
+    ]
+    if not zips:
+        fail(
+            f"Release {tag} has no .zip asset. Attach the distributable zip "
+            "(archive root must be the package directory contents, with no "
+            "wrapper folder) before publishing."
+        )
+    download_url = zips[0]
 
     new_release: dict = {
         "tag": tag,
         "date": published_at,
         "download_url": download_url,
-        "min_fossbilling_version": meta["min_fossbilling_version"],
+        "min_fossbilling_version": min_version,
     }
     if html_url:
         new_release["changelog_url"] = html_url
 
+    license_name = meta["license"]
+    if not isinstance(license_name, str) or not license_name.strip():
+        fail(f"{manifest_path} license must be a non-empty SPDX identifier")
     content: dict = {
-        "type": meta["type"],
+        "type": TYPE_MAP[meta["type"]],
         "name": meta["name"],
         "description": meta["description"],
         "releases": [new_release],
-        "website": meta["website"],
-        "license": meta["license"],
+        "website": meta["homepage_url"],
+        "license": {"name": license_name, "spdx_id": license_name},
         "readme": readme,
-        "source": meta["source"],
+        "source": {"type": "github", "repo": os.environ.get("GITHUB_REPOSITORY", "FOSSBilling/modules")},
         "version": version,
         "download_url": download_url,
     }
-    if meta.get("icon_url"):
-        content["icon_url"] = meta["icon_url"]
+    icon_url = meta.get("icon_url", "")
+    if isinstance(icon_url, str) and re.match(r"https?://", icon_url):
+        content["icon_url"] = icon_url
 
     size = len(json.dumps(content).encode())
     if size > MAX_CONTENT_BYTES:

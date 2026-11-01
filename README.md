@@ -5,38 +5,37 @@ First-party extensions, published to the catalogue at
 
 ## Layout
 
-One directory per extension. The directory name is the catalogue id
-(lowercase, e.g. `paypal/`):
+One directory per extension, named `Ucfirst(id)` to match the installed
+layout (`Branding/` for id `branding`):
 
 ```text
-paypal/
-  fossbilling.json   # catalogue metadata (required)
-  README.md          # becomes the catalogue readme (required by default)
-  src/ ...           # the module itself, plus a .zip release asset
+Branding/
+  manifest.json   # module manifest, v1 spec (required)
+  README.md       # becomes the catalogue readme (required)
+  Service.php, Api/, Controller/, templates/, icon.svg, ...
 ```
+
+`manifest.json` follows the v1 spec (`manifest_version: 1`,
+`type: "module"`). The canonical spec is
+[`manifest.schema.json`](./manifest.schema.json); every package is
+validated against it (plus semantic checks in `tools/validate.php`) by CI.
 
 ## Releasing
 
-Tag the release `<extension-id>-v<semver>` (e.g. `paypal-v1.2.0`) and attach
-the distributable `.zip` as a release asset. Publishing a release runs
-`.github/workflows/publish.yml`, which submits the new version to the
+Tag the release `<extension-id>-v<semver>` (e.g. `branding-v0.8.9`, version
+matching the package's `manifest.json`) and attach the distributable
+`.zip` as a release asset. The zip must contain the package directory
+contents at the archive root, with no wrapper folder, so it installs as-is.
+Publishing a release runs `.github/workflows/publish.yml`, which builds the
+catalogue payload from `manifest.json` (translating `type: module` to the
+catalogue's `mod`, and `requires.fossbilling: ">=X.Y.Z"` to
+`min_fossbilling_version: "X.Y.Z"`), submits the new version to the
 extensions API and approves it. A manual run is available via
 `workflow_dispatch` with the same tag.
 
-`fossbilling.json` fields:
-
-| Field | Required | Notes |
-| --- | --- | --- |
-| `type` | yes | `mod`, `theme`, `payment-gateway`, `server-manager`, `domain-registrar`, `hook`, or `translation` |
-| `name` | yes | Display name, max 120 chars |
-| `description` | yes | Max 4000 chars |
-| `website` | yes | `https://` URL |
-| `license` | yes | `{ "name": "..." }`, plus optional `spdx_id` / `url` |
-| `source` | yes | `{ "type": "github", "repo": "FOSSBilling/modules" }` |
-| `min_fossbilling_version` | yes | e.g. `"0.7"` |
-| `icon_url` | no | `https://` URL |
-| `readme_file` | no | Defaults to `README.md` in the extension dir |
-| `download_url` | no | Defaults to the release's first `.zip` asset. Supports `{tag}` and `{version}` placeholders |
+Only simple `>=X.Y.Z` fossbilling constraints can be published; anything
+fancier fails the payload build with an explicit error. `icon_url` is only
+submitted when it is an absolute `https://` URL.
 
 The release tag becomes the catalogue release entry: date and changelog link
 come from the GitHub release itself.
