@@ -12,12 +12,25 @@ $failures = [];
 $parser = new VersionParser();
 $spdx = new SpdxLicenses();
 
-$packages = array_values(array_filter(glob($root . '/*', GLOB_ONLYDIR) ?: [], static fn (string $d): bool => is_file($d . '/manifest.json')));
-if ($packages === []) { fwrite(STDERR, "No packages with manifest.json found\n"); exit(1); }
+$packages = array_values(array_filter(
+    glob($root . '/*', GLOB_ONLYDIR) ?: [],
+    // Only module packages carry a manifest; dotdirs and tooling are not packages.
+    static fn (string $d): bool => basename($d)[0] !== '.' && basename($d) !== 'tools',
+));
+if ($packages === []) {
+    fwrite(STDERR, "No packages found\n");
+    exit(1);
+}
 
 foreach ($packages as $dir) {
     $id = basename($dir);
     $errors = [];
+    if (!is_file($dir . '/manifest.json')) {
+        $errors[] = 'manifest.json is missing';
+        printResult($id, $errors, $failures);
+
+        continue;
+    }
     $raw = file_get_contents($dir . '/manifest.json');
     $data = json_decode($raw);
     if (!$data instanceof stdClass) { $errors[] = 'manifest.json is not valid JSON'; printResult($id, $errors, $failures); continue; }
@@ -37,10 +50,11 @@ foreach ($packages as $dir) {
     if (isset($m['icon_url'])) {
         $icon = $m['icon_url'];
         $resolved = realpath($dir . '/' . $icon) ?: $dir . '/' . $icon;
-        if (!is_file($dir . '/' . $icon) || !str_starts_with((string) $resolved, (string) realpath($dir))) { $errors[] = 'icon_url target missing or escapes package dir'; }
+        $base = realpath($dir);
+        if (!is_file($dir . '/' . $icon) || $base === false || !str_starts_with($resolved, $base . DIRECTORY_SEPARATOR)) { $errors[] = 'icon_url target missing or escapes package dir'; }
     }
     try { $parser->normalize($m['version'] ?? ''); if (str_starts_with((string) ($m['version'] ?? ''), 'v')) { $errors[] = 'version must not have a "v" prefix'; } }
-    catch (\UnexpectedValueException $e) { $errors[] = 'version is not valid semver'; }
+    catch (\UnexpectedValueException) { $errors[] = 'version is not valid semver'; }
     foreach (['fossbilling' => $m['requires']['fossbilling'] ?? null, 'php' => $m['requires']['php'] ?? null] as $field => $c) {
         try { $parser->parseConstraints((string) $c); } catch (\UnexpectedValueException) { $errors[] = "requires.{$field} is not a valid composer/semver constraint"; }
     }
@@ -48,7 +62,7 @@ foreach ($packages as $dir) {
         if ($dep === ($m['id'] ?? null)) { $errors[] = 'requires.modules must not self-reference'; }
         try { $parser->parseConstraints((string) $c); } catch (\UnexpectedValueException) { $errors[] = "requires.modules.{$dep} is not a valid constraint"; }
     }
-    if (method_exists($spdx, 'validate') ? !$spdx->validate((string) ($m['license'] ?? '')) : false) { $errors[] = 'license is not a valid SPDX expression'; }
+    if (!$spdx->validate((string) ($m['license'] ?? ''))) { $errors[] = 'license is not a valid SPDX expression'; }
 
     printResult($id, $errors, $failures);
 }
