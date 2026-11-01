@@ -1,4 +1,4 @@
-# FOSSBilling modules
+# FOSSBilling Modules
 
 First-party extensions, published to the catalogue at
 [extensions.fossbilling.org](https://extensions.fossbilling.org) by CI.
