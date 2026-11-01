@@ -43,10 +43,20 @@ come from the GitHub release itself.
 
 ## Secrets
 
+The publisher credentials live in the `catalogue`
+[environment](https://github.com/FOSSBilling/modules/settings/environments),
+not as repository secrets:
+
 | Secret | Purpose |
 | --- | --- |
 | `MODULES_PUBLISHER_CLIENT_ID` | OAuth client id from `auth.fossbilling.net` |
 | `MODULES_PUBLISHER_CLIENT_SECRET` | Its `fba_cs_` secret |
+
+Every publish run waits for an approval from a designated reviewer before
+the job executes. That is deliberate: the workflow runs code from the
+triggering ref, so without the gate a collaborator could dispatch a
+modified workflow from another branch and exfiltrate the credentials.
+Approve a run only after checking which tag and ref it is publishing.
 
 The client authenticates with `client_credentials` and is bound to the
 `fossbilling` developer profile with publish rights (see the API repo's

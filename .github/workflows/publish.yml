@@ -21,8 +21,14 @@ env:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # Publisher credentials live in this environment, which requires an
+    # approval from a designated reviewer before the job runs. That keeps a
+    # collaborator from exfiltrating the secrets by dispatching a modified
+    # workflow from another branch: the code from their ref only executes
+    # after a reviewer has approved that specific run.
+    environment: catalogue
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Resolve extension and version from tag
         id: target
