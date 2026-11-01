@@ -1,0 +1,39 @@
+name: Deploy Manifest JSON Schema to R2
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: main
+    paths: ['manifest.schema.json', '.github/workflows/schema-deploy.yml']
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with: 
+          php-version: '8.5'
+        
+      - name: Install PHP Dependencies
+        run: composer install --no-progress --no-interaction --working-dir=tools
+
+      - name: Validate Manifest
+        run: php tools/validate.php
+
+      - name: Upload Manifest Schema to R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+        run: |
+          aws s3 cp manifest.schema.json s3://${{ vars.CLOUDFLARE_R2_SCHEMAS_BUCKET }}/manifest/v1.json
+          --endpoint-url https://${{ vars.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          --content-type application/schema+json
+          --cache-control 'public, max-age=3600, must-revalidate'
