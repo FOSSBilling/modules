@@ -8,7 +8,7 @@ First-party extensions, published to the catalogue at
 One directory per extension. The directory name is the catalogue id
 (lowercase, e.g. `paypal/`):
 
-```
+```text
 paypal/
   fossbilling.json   # catalogue metadata (required)
   README.md          # becomes the catalogue readme (required by default)
