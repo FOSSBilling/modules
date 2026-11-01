@@ -33,7 +33,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: auto
         run: |
-          aws s3 cp manifest.schema.json s3://${{ vars.CLOUDFLARE_R2_SCHEMAS_BUCKET }}/manifest/v1.json
-          --endpoint-url https://${{ vars.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
-          --content-type application/schema+json
-          --cache-control 'public, max-age=3600, must-revalidate'
+          aws s3 cp manifest.schema.json s3://${{ vars.CLOUDFLARE_R2_SCHEMAS_BUCKET }}/manifest/v1.json \
+            --endpoint-url https://${{ vars.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com \
+            --content-type application/schema+json \
+            --cache-control 'public, max-age=3600, must-revalidate'
