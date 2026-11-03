@@ -1,8 +1,13 @@
-"""Build the extensions API content payload for one release.
+"""Build the extensions API content payloads for one release.
 
 Reads the package's manifest.json (v1 spec, see manifest.schema.json),
 plus the package README, resolves the download URL from the GitHub
-release's .zip asset, and writes the API content object to payload.json.
+release's .zip asset, and writes two API content files:
+
+* ``payload-create.json`` for POST /extensions (includes the ``id`` the
+  catalogue requires on create),
+* ``payload-update.json`` for PUT /extensions/{id} (identical except the
+  ``id``, which that endpoint rejects as an unknown field).
 
 The catalogue API speaks its own type vocabulary, so the manifest type is
 translated here ("module" -> "mod"); unknown types fail loudly rather than
@@ -67,6 +72,8 @@ def min_core_version(constraint: object, manifest_path: str) -> str:
 
 def main() -> None:
     ext_id, version, tag = sys.argv[1], sys.argv[2], sys.argv[3]
+    if not re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", ext_id) or len(ext_id) > 200:
+        fail(f"Extension id {ext_id!r} is not a valid catalogue id (lowercase alphanumeric segments separated by hyphens)")
     ext_dir = find_package_dir(ext_id)
     manifest_path = os.path.join(ext_dir, "manifest.json")
     meta = json.load(open(manifest_path))
@@ -164,13 +171,18 @@ def main() -> None:
     if isinstance(icon_url, str) and re.match(r"https?://", icon_url):
         content["icon_url"] = icon_url
 
-    size = len(json.dumps(content).encode())
+    create_content = dict(content)
+    create_content["id"] = ext_id
+
+    size = len(json.dumps(create_content).encode())
     if size > MAX_CONTENT_BYTES:
         fail("Built payload exceeds the 256 KiB content limit")
 
-    with open("payload.json", "w") as handle:
+    with open("payload-create.json", "w") as handle:
+        json.dump(create_content, handle)
+    with open("payload-update.json", "w") as handle:
         json.dump(content, handle)
-    print(f"Built payload for {ext_id} {version} ({size} bytes)")
+    print(f"Built payloads for {ext_id} {version} ({size} bytes)")
 
 
 main()

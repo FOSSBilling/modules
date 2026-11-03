@@ -104,10 +104,10 @@ jobs:
           attempt=0
           while :; do
             if [ "$EXISTS" = "1" ]; then
-              api PUT "/extensions/$EXT_ID" payload.json
+              api PUT "/extensions/$EXT_ID" payload-update.json
               ok=202
             else
-              api POST "/extensions" payload.json
+              api POST "/extensions" payload-create.json
               ok=201
             fi
             if [ "$HTTP_CODE" = "429" ] && [ "$attempt" -lt 3 ]; then
