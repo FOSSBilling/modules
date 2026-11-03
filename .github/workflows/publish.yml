@@ -26,7 +26,7 @@ jobs:
     # collaborator from exfiltrating the secrets by dispatching a modified
     # workflow from another branch: the code from their ref only executes
     # after a reviewer has approved that specific run.
-    environment: catalogue
+    environment: production
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 

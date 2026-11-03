@@ -42,7 +42,7 @@ come from the GitHub release itself.
 
 ## Secrets
 
-The publisher credentials live in the `catalogue`
+The publisher credentials live in the `production`
 [environment](https://github.com/FOSSBilling/modules/settings/environments),
 not as repository secrets:
 
