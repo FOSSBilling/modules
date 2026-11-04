@@ -39,7 +39,7 @@ jobs:
       - name: Checkout release packages
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ steps.target.outputs.tag }}
+          ref: refs/tags/${{ steps.target.outputs.tag }}
           path: release-source
 
       - name: Fetch machine token
