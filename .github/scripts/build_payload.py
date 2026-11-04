@@ -25,11 +25,12 @@ Usage: build_payload.py <extension_id> <version> <tag>
 import json
 import os
 from pathlib import Path
-import re
 import subprocess
 import sys
 import urllib.error
 import urllib.request
+
+from resolve_release import parse_release_tag
 
 
 MAX_CONTENT_BYTES = 256 * 1024
@@ -67,10 +68,10 @@ def find_package_dir(ext_id: str) -> str:
     return matches[0]
 
 
-def fetch_existing_releases(ext_id: str) -> list:
+def fetch_existing_releases(ext_id: str) -> list | None:
     """Fetch the extension's currently published releases for merge history.
 
-    Returns [] for a new extension (API 404) or when no API token is
+    Returns None for a new extension (API 404) or when no API token is
     configured (offline use). Any other failure is fatal: silently
     submitting without history would wipe the extension's changelog.
     Entries are reduced to the release fields the API schema
@@ -79,7 +80,7 @@ def fetch_existing_releases(ext_id: str) -> list:
     api_token = os.environ.get("API_TOKEN", "")
     api_base = os.environ.get("API_BASE_URL", "")
     if not api_token or not api_base:
-        return []
+        return None
 
     http_request = urllib.request.Request(
         f"{api_base.rstrip('/')}/extensions/{ext_id}",
@@ -90,7 +91,7 @@ def fetch_existing_releases(ext_id: str) -> list:
             body = json.load(response)
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
-            return []
+            return None
         fail(f"Could not fetch existing releases for '{ext_id}': HTTP {exc.code}")
     except Exception as exc:
         fail(f"Could not fetch existing releases for '{ext_id}': {exc}")
@@ -130,7 +131,7 @@ def canonical_tag(tag: object, ext_id: str) -> object:
     return tag
 
 
-def merge_releases(new_release: dict, ext_id: str) -> list:
+def merge_releases(new_release: dict, ext_id: str, history: list) -> list:
     """Prepend the new release to the published history.
 
     Same-tag re-runs replace in place so a retried publish is idempotent;
@@ -144,7 +145,7 @@ def merge_releases(new_release: dict, ext_id: str) -> list:
     merged = [new_release]
     merged.extend(
         entry
-        for entry in fetch_existing_releases(ext_id)
+        for entry in history
         if canonical_tag(entry.get("tag"), ext_id) != new_release["tag"]
     )
     return merged[:MAX_RELEASES]
@@ -152,8 +153,12 @@ def merge_releases(new_release: dict, ext_id: str) -> list:
 
 def main() -> None:
     ext_id, version, tag = sys.argv[1], sys.argv[2], sys.argv[3]
-    if not re.fullmatch(r"[a-z0-9_-]+", ext_id) or len(ext_id) > 64:
-        fail(f"Extension id {ext_id!r} is not a valid extension id (1–64 lowercase letters, digits, underscores, or hyphens)")
+    try:
+        target = parse_release_tag(tag)
+    except ValueError as exc:
+        fail(str(exc))
+    if target != (ext_id, version):
+        fail("Extension id and version must match the release tag")
     ext_dir = find_package_dir(ext_id)
     manifest_path = os.path.join(ext_dir, "manifest.json")
     meta = json.loads(Path(manifest_path).read_text())
@@ -199,6 +204,10 @@ def main() -> None:
     if not readme.strip():
         fail(f"{manifest_path} has an empty description and no README.md to fall back on")
 
+    # Zod measures JavaScript strings in UTF-16 code units, not code points.
+    if len(readme.encode("utf-16-le")) // 2 > 100_000:
+        fail(f"{readme_path} exceeds the API's 100,000-character README limit")
+
     release = json.loads(
         subprocess.run(
             ["gh", "api", f"repos/{os.environ['GITHUB_REPOSITORY']}/releases/tags/{tag}"],
@@ -239,6 +248,7 @@ def main() -> None:
     license_name = meta["license"]
     if not isinstance(license_name, str) or not license_name.strip():
         fail(f"{manifest_path} license must be a non-empty license expression")
+    history = fetch_existing_releases(ext_id)
     content: dict = {
         "manifest_version": 1,
         "type": meta["type"],
@@ -246,7 +256,7 @@ def main() -> None:
         "requires": requires,
         "name": meta["name"],
         "description": meta["description"],
-        "releases": merge_releases(new_release, ext_id),
+        "releases": merge_releases(new_release, ext_id, history or []),
         "license": license_name,
         "readme": readme,
         "source": {"type": "github", "repo": os.environ.get("GITHUB_REPOSITORY", "FOSSBilling/modules")},
@@ -263,14 +273,16 @@ def main() -> None:
     create_content = dict(content)
     create_content["id"] = ext_id
 
-    size = len(json.dumps(create_content).encode())
+    size = len(json.dumps(create_content, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
     if size > MAX_CONTENT_BYTES:
         fail("Built payload exceeds the 256 KiB content limit")
 
-    with open("payload-create.json", "w") as handle:
-        json.dump(create_content, handle)
-    with open("payload-update.json", "w") as handle:
-        json.dump(content, handle)
+    with open("payload-create.json", "w", encoding="utf-8") as handle:
+        json.dump(create_content, handle, ensure_ascii=False, separators=(",", ":"))
+    with open("payload-update.json", "w", encoding="utf-8") as handle:
+        json.dump(content, handle, ensure_ascii=False, separators=(",", ":"))
+    with open("payload-target.json", "w") as handle:
+        json.dump({"exists": history is not None}, handle)
     print(f"Built payloads for {ext_id} {version} ({size} bytes)")
 
 

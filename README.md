@@ -26,7 +26,7 @@ Tag the release `<extension-id>-v<semver>` (e.g. `branding-v0.8.9`, version
 matching the package's `manifest.json`) and attach the distributable
 `.zip` as a release asset. The zip must contain the package directory
 contents at the archive root, with no wrapper folder, so it installs as-is.
-Publishing a release runs `.github/workflows/publish.yml`, which sends the manifest v1 fields directly to the extensions API and approves the new revision. `type: "module"`, string licenses, optional `homepage_url`, package-relative `icon_url`, author metadata, and the complete `requires` object are preserved. A manual run is available via `workflow_dispatch` with the same tag.
+Publishing a release runs `.github/workflows/publish.yml`, which sends the manifest v1 fields directly to the extensions API and approves the new revision. `type: "module"`, string licenses, optional `homepage_url`, package-relative `icon_url`, author metadata, and the complete `requires` object are preserved. A manual run is available via `workflow_dispatch` with the same tag. Both triggers read package files from that tag, while using publisher tooling from the reviewed workflow ref.
 
 FOSSBilling, PHP, and module constraints are retained verbatim, including compound Composer ranges. Each release stores its own requirements. Deploy the API manifest migration and matching extensions site before running this publisher; it refuses history without `requires` instead of discarding compatibility information.
 
@@ -34,7 +34,7 @@ The release becomes a new extensions directory release entry keyed by the versio
 date, changelog link, and the distributable asset come from the GitHub
 release itself, and the entry is prepended to the extension's release
 history. A manual re-run via `workflow_dispatch` with the same tag
-replaces the entry in place.
+replaces the entry in place. A public 404 can also mean a delisted or unpublished extension: if creation then conflicts, publishing stops for manual correction instead of updating without its release history. Once the extension is public, retry to fetch its history first.
 
 ## Secrets
 
