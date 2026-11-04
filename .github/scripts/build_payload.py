@@ -135,6 +135,16 @@ def fetch_existing_releases(ext_id: str) -> list:
     return known
 
 
+def canonical_tag(tag: object, ext_id: str) -> object:
+    """Collapse the pre-fix `<ext-id>-v<semver>` tag shape to its version.
+
+    Comparison-only: stored entries are never rewritten here.
+    """
+    if isinstance(tag, str) and tag.startswith(f"{ext_id}-v"):
+        return tag[len(ext_id) + 2 :]
+    return tag
+
+
 def merge_releases(new_release: dict, ext_id: str) -> list:
     """Prepend the new release to the published history.
 
@@ -153,16 +163,6 @@ def merge_releases(new_release: dict, ext_id: str) -> list:
         if canonical_tag(entry.get("tag"), ext_id) != new_release["tag"]
     )
     return merged[:MAX_RELEASES]
-
-
-def canonical_tag(tag: object, ext_id: str) -> object:
-    """Collapse the pre-fix `<ext-id>-v<semver>` tag shape to its version.
-
-    Comparison-only: stored entries are never rewritten here.
-    """
-    if isinstance(tag, str) and tag.startswith(f"{ext_id}-v"):
-        return tag[len(ext_id) + 2 :]
-    return tag
 
 
 def main() -> None:
