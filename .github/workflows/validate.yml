@@ -23,5 +23,5 @@ jobs:
       - name: Validate Manifest
         run: php tools/validate.php
 
-      - name: Compile check release tooling
-        run: python3 -m py_compile .github/scripts/build_payload.py
+      - name: Test release tooling
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'

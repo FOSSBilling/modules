@@ -1,6 +1,6 @@
 # FOSSBilling Modules
 
-First-party extensions, published to the catalogue at
+First-party extensions, published to the extensions directory at
 [extensions.fossbilling.org](https://extensions.fossbilling.org) by CI.
 
 ## Layout
@@ -11,7 +11,7 @@ layout (`Branding/` for id `branding`):
 ```text
 Branding/
   manifest.json   # module manifest, v1 spec (required)
-  README.md       # becomes the catalogue readme (required)
+  README.md       # becomes the extensions directory readme (required)
   Service.php, Api/, Controller/, templates/, icon.svg, ...
 ```
 
@@ -26,18 +26,11 @@ Tag the release `<extension-id>-v<semver>` (e.g. `branding-v0.8.9`, version
 matching the package's `manifest.json`) and attach the distributable
 `.zip` as a release asset. The zip must contain the package directory
 contents at the archive root, with no wrapper folder, so it installs as-is.
-Publishing a release runs `.github/workflows/publish.yml`, which builds the
-catalogue payload from `manifest.json` (translating `type: module` to the
-catalogue's `mod`, and `requires.fossbilling: ">=X.Y.Z"` to
-`min_fossbilling_version: "X.Y.Z"`), submits the new version to the
-extensions API and approves it. A manual run is available via
-`workflow_dispatch` with the same tag.
+Publishing a release runs `.github/workflows/publish.yml`, which sends the manifest v1 fields directly to the extensions API and approves the new revision. `type: "module"`, string licenses, optional `homepage_url`, package-relative `icon_url`, author metadata, and the complete `requires` object are preserved. A manual run is available via `workflow_dispatch` with the same tag.
 
-Only simple `>=X.Y.Z` fossbilling constraints can be published; anything
-fancier fails the payload build with an explicit error. `icon_url` is only
-submitted when it is an absolute `https://` URL.
+FOSSBilling, PHP, and module constraints are retained verbatim, including compound Composer ranges. Each release stores its own requirements. Deploy the API manifest migration and matching extensions site before running this publisher; it refuses history without `requires` instead of discarding compatibility information.
 
-The release becomes a new catalogue release entry keyed by the version:
+The release becomes a new extensions directory release entry keyed by the version:
 date, changelog link, and the distributable asset come from the GitHub
 release itself, and the entry is prepended to the extension's release
 history. A manual re-run via `workflow_dispatch` with the same tag

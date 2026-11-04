@@ -5,27 +5,26 @@ plus the package README, resolves the download URL from the GitHub
 release's .zip asset, and writes two API content files:
 
 * ``payload-create.json`` for POST /extensions (includes the ``id`` the
-  catalogue requires on create),
+  API requires on create),
 * ``payload-update.json`` for PUT /extensions/{id} (identical except the
   ``id``, which that endpoint rejects as an unknown field).
 
 The new release entry is keyed by the plain version (``"0.8.9"``), not the
-git tag (``"branding-v0.8.9"``): the catalogue sorts and compares releases
+git tag (``"branding-v0.8.9"``): the API sorts and compares releases
 by semver tag on every read, and the extensions site derives the editable
 version from it. The entry is prepended to the extension's already
 published releases (fetched from the API when ``API_TOKEN`` is set) so the
-catalogue keeps its changelog history; without a token only the new entry
+API keeps its changelog history; without a token only the new entry
 is submitted.
 
-The catalogue API speaks its own type vocabulary, so the manifest type is
-translated here ("module" -> "mod"); unknown types fail loudly rather than
-being passed through.
+The manifest metadata is sent unchanged using the Extensions v2 contract.
 
 Usage: build_payload.py <extension_id> <version> <tag>
 """
 
 import json
 import os
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -35,12 +34,11 @@ import urllib.request
 
 MAX_CONTENT_BYTES = 256 * 1024
 
-# Catalogue cap on releases per extension (ExtensionContentSchema); older
+# Extensions API cap on releases per extension (ExtensionContentSchema); older
 # entries past this are dropped from the submitted history.
 MAX_RELEASES = 100
 
-# Manifest (manifest.json v1) type -> catalogue API type.
-TYPE_MAP = {"module": "mod"}
+MANIFEST_TYPES = {"module", "theme", "payment-gateway", "server-manager", "domain-registrar", "translation"}
 
 
 def fail(message: str) -> None:
@@ -57,7 +55,7 @@ def find_package_dir(ext_id: str) -> str:
         if not os.path.isdir(entry) or not os.path.isfile(manifest):
             continue
         try:
-            meta = json.load(open(manifest))
+            meta = json.loads(Path(manifest).read_text())
         except ValueError:
             fail(f"{manifest} is not valid JSON")
         if isinstance(meta, dict) and meta.get("id") == ext_id:
@@ -69,28 +67,13 @@ def find_package_dir(ext_id: str) -> str:
     return matches[0]
 
 
-def min_core_version(constraint: object, manifest_path: str) -> str:
-    """Reduce a `requires.fossbilling` constraint to the plain minimum
-    version the catalogue release record expects. Only simple >= pins are
-    accepted; anything fancier must be resolved by hand before releasing."""
-    if not isinstance(constraint, str):
-        fail(f"{manifest_path} requires.fossbilling must be a version constraint string")
-    match = re.fullmatch(r">=\s*(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)", constraint.strip())
-    if not match:
-        fail(
-            f"{manifest_path} requires.fossbilling must be a simple '>=X.Y.Z' constraint "
-            f"to publish, got {constraint!r}"
-        )
-    return match.group(1)
-
-
 def fetch_existing_releases(ext_id: str) -> list:
     """Fetch the extension's currently published releases for merge history.
 
     Returns [] for a new extension (API 404) or when no API token is
     configured (offline use). Any other failure is fatal: silently
-    submitting without history would wipe the catalogue's changelog.
-    Entries are reduced to the release fields the catalogue schema
+    submitting without history would wipe the extension's changelog.
+    Entries are reduced to the release fields the API schema
     accepts, so a newer API response shape can never fail validation.
     """
     api_token = os.environ.get("API_TOKEN", "")
@@ -114,11 +97,13 @@ def fetch_existing_releases(ext_id: str) -> list:
     result = body.get("result") if isinstance(body, dict) else None
     releases = result.get("releases") if isinstance(result, dict) else None
     if not isinstance(releases, list):
-        fail(f"Catalogue response for '{ext_id}' has no releases list")
+        fail(f"Extensions API response for '{ext_id}' has no releases list")
     known = []
     for entry in releases:
         if not isinstance(entry, dict):
-            fail(f"Catalogue response for '{ext_id}' has a malformed release entry")
+            fail(f"Extensions API response for '{ext_id}' has a malformed release entry")
+        if not isinstance(entry.get("requires"), dict) or not all(isinstance(entry["requires"].get(key), str) and entry["requires"][key] for key in ("fossbilling", "php")):
+            fail(f"Extensions API response for '{ext_id}' has a release without manifest requirements; deploy the API migration before publishing")
         known.append(
             {
                 key: entry[key]
@@ -127,7 +112,7 @@ def fetch_existing_releases(ext_id: str) -> list:
                     "date",
                     "download_url",
                     "changelog_url",
-                    "min_fossbilling_version",
+                    "requires",
                 )
                 if key in entry
             }
@@ -149,7 +134,7 @@ def merge_releases(new_release: dict, ext_id: str) -> list:
     """Prepend the new release to the published history.
 
     Same-tag re-runs replace in place so a retried publish is idempotent;
-    the catalogue caps the list at its 100-release maximum, oldest dropped.
+    the API caps the list at its 100-release maximum, oldest dropped.
     A pre-fix entry keyed by git tag (`<id>-v<semver>`) counts as the same
     release as its version, so re-publishing that version replaces the twin
     instead of doubling it; other legacy entries are preserved as-is.
@@ -167,11 +152,11 @@ def merge_releases(new_release: dict, ext_id: str) -> list:
 
 def main() -> None:
     ext_id, version, tag = sys.argv[1], sys.argv[2], sys.argv[3]
-    if not re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", ext_id) or len(ext_id) > 200:
-        fail(f"Extension id {ext_id!r} is not a valid catalogue id (lowercase alphanumeric segments separated by hyphens)")
+    if not re.fullmatch(r"[a-z0-9_-]+", ext_id) or len(ext_id) > 64:
+        fail(f"Extension id {ext_id!r} is not a valid extension id (1–64 lowercase letters, digits, underscores, or hyphens)")
     ext_dir = find_package_dir(ext_id)
     manifest_path = os.path.join(ext_dir, "manifest.json")
-    meta = json.load(open(manifest_path))
+    meta = json.loads(Path(manifest_path).read_text())
 
     for field in (
         "manifest_version",
@@ -182,7 +167,6 @@ def main() -> None:
         "description",
         "author",
         "license",
-        "homepage_url",
         "requires",
     ):
         if field not in meta:
@@ -196,17 +180,18 @@ def main() -> None:
     if not isinstance(meta["requires"].get("fossbilling"), str):
         fail(f"{manifest_path} requires.fossbilling must be a version constraint string")
 
-    if meta["type"] not in TYPE_MAP:
-        fail(f"{manifest_path} has unsupported type {meta['type']!r} for catalogue submission")
+    if meta["type"] not in MANIFEST_TYPES:
+        fail(f"{manifest_path} has unsupported type {meta['type']!r} for extension submission")
     if meta["version"] != version:
         fail(f"{manifest_path} version {meta['version']!r} does not match release tag version {version!r}")
 
     requires = meta["requires"]
-    min_version = min_core_version(requires["fossbilling"], manifest_path)
+    if not isinstance(requires.get("php"), str) or not requires["php"].strip():
+        fail(f"{manifest_path} requires.php must be a non-empty version constraint string")
 
     readme_path = os.path.join(ext_dir, "README.md")
     if os.path.isfile(readme_path):
-        readme = open(readme_path).read()
+        readme = Path(readme_path).read_text()
         if not readme.strip():
             fail(f"{readme_path} is empty")
     else:
@@ -238,7 +223,7 @@ def main() -> None:
         )
     download_url = zips[0]
 
-    # The catalogue keys releases by plain semver version, not by git tag:
+    # The API keys releases by plain semver version, not by git tag:
     # sorting, latest-release resolution, and the directory's edit form
     # all compare `tag` with semver. The git tag stays reachable through
     # the changelog and download URLs.
@@ -246,29 +231,34 @@ def main() -> None:
         "tag": version,
         "date": published_at,
         "download_url": download_url,
-        "min_fossbilling_version": min_version,
+        "requires": requires,
     }
     if html_url:
         new_release["changelog_url"] = html_url
 
     license_name = meta["license"]
     if not isinstance(license_name, str) or not license_name.strip():
-        fail(f"{manifest_path} license must be a non-empty SPDX identifier")
+        fail(f"{manifest_path} license must be a non-empty license expression")
     content: dict = {
-        "type": TYPE_MAP[meta["type"]],
+        "manifest_version": 1,
+        "type": meta["type"],
+        "author": meta["author"],
+        "requires": requires,
         "name": meta["name"],
         "description": meta["description"],
         "releases": merge_releases(new_release, ext_id),
-        "website": meta["homepage_url"],
-        "license": {"name": license_name, "spdx_id": license_name},
+        "license": license_name,
         "readme": readme,
         "source": {"type": "github", "repo": os.environ.get("GITHUB_REPOSITORY", "FOSSBilling/modules")},
         "version": version,
         "download_url": download_url,
     }
     icon_url = meta.get("icon_url", "")
-    if isinstance(icon_url, str) and re.match(r"https?://", icon_url):
+    if isinstance(icon_url, str) and icon_url:
         content["icon_url"] = icon_url
+
+    if "homepage_url" in meta:
+        content["homepage_url"] = meta["homepage_url"]
 
     create_content = dict(content)
     create_content["id"] = ext_id
@@ -284,4 +274,5 @@ def main() -> None:
     print(f"Built payloads for {ext_id} {version} ({size} bytes)")
 
 
-main()
+if __name__ == "__main__":
+    main()
