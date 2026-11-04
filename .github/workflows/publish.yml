@@ -33,23 +33,14 @@ jobs:
       - name: Resolve extension and version from tag
         id: target
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            TAG="${{ github.event.release.tag_name }}"
-          else
-            TAG="${{ inputs.tag }}"
-          fi
-          if ! echo "$TAG" | grep -Eq '^.+-(v[0-9]+\.[0-9]+\.[0-9]+.*)$'; then
-            echo "::error::Tag '$TAG' does not match <extension-id>-v<semver>"
-            exit 1
-          fi
-          EXT_ID="${TAG%-v*}"
-          VERSION="${TAG##*-v}"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "extension_id=$EXT_ID" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Publishing $EXT_ID version $VERSION"
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: python3 -E -s .github/scripts/resolve_release.py
+
+      - name: Checkout release packages
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: refs/tags/${{ steps.target.outputs.tag }}
+          path: release-source
 
       - name: Fetch machine token
         id: token
@@ -59,7 +50,7 @@ jobs:
             -d grant_type=client_credentials \
             -d "scope=extensions:push extensions:publish" \
             -d "resource=$API_AUDIENCE")
-          ACCESS=$(echo "$RESP" | python3 -c "import json,sys; print(json.load(sys.stdin).get('access_token',''))")
+          ACCESS=$(echo "$RESP" | python3 -I -c "import json,sys; print(json.load(sys.stdin).get('access_token',''))")
           if [ -z "$ACCESS" ]; then
             echo "::error::Token request failed: $RESP"
             exit 1
@@ -70,13 +61,18 @@ jobs:
           PUBLISHER_CLIENT_SECRET: ${{ secrets.MODULES_PUBLISHER_CLIENT_SECRET }}
 
       - name: Build extension payload
+        working-directory: release-source
         env:
           GH_TOKEN: ${{ github.token }}
           API_TOKEN: ${{ steps.token.outputs.access_token }}
           API_BASE_URL: ${{ env.API_BASE_URL }}
-        run: python3 .github/scripts/build_payload.py "${{ steps.target.outputs.extension_id }}" "${{ steps.target.outputs.version }}" "${{ steps.target.outputs.tag }}"
+          EXT_ID: ${{ steps.target.outputs.extension_id }}
+          VERSION: ${{ steps.target.outputs.version }}
+          RELEASE_TAG: ${{ steps.target.outputs.tag }}
+        run: python3 -E -s ../.github/scripts/build_payload.py "$EXT_ID" "$VERSION" "$RELEASE_TAG"
 
       - name: Submit revision (create or update)
+        working-directory: release-source
         id: submit
         env:
           API_TOKEN: ${{ steps.token.outputs.access_token }}
@@ -100,8 +96,10 @@ jobs:
               && grep -i '^retry-after:' headers.txt | tail -1 | tr -d '\r' | awk '{print $2}' || echo 60
           }
 
-          EXISTS=0
-          api GET "/extensions/$EXT_ID" && [ "$HTTP_CODE" = "200" ] && EXISTS=1
+          # Isolate Python imports: tagged files are data, never parser code.
+          # Use the same read that supplied the payload's history. A second
+          # existence probe could switch an empty-history create into an update.
+          EXISTS=$(python3 -I -c "import json; print(int(json.load(open('payload-target.json'))['exists']))")
 
           attempt=0
           while :; do
@@ -119,24 +117,24 @@ jobs:
               attempt=$((attempt + 1))
               continue
             fi
-            if [ "$HTTP_CODE" = "409" ] && [ "$EXISTS" = "0" ] && echo "$HTTP_BODY" | grep -q "already exists"; then
-              echo "Extension appeared between check and create, switching to update"
-              EXISTS=1
-              continue
+            if [ "$HTTP_CODE" = "409" ] && [ "$EXISTS" = "0" ]; then
+              echo "::error::Create conflicted after a public 404: $HTTP_BODY"
+              echo "::error::History was unavailable. Resolve the hidden/reserved extension or retry after it becomes public; refusing to overwrite releases."
+              exit 1
             fi
             break
           done
 
           if [ "$HTTP_CODE" = "409" ]; then
             echo "::error::API refused with 409: $HTTP_BODY"
-            echo "::error::A revision is likely already pending review — a moderator must approve or withdraw it before this release can publish."
+            echo "::error::A revision is likely already pending review — a moderator must approve or reject it before this release can publish."
             exit 1
           fi
           if [ "$HTTP_CODE" != "$ok" ]; then
             echo "::error::Submit failed ($HTTP_CODE): $HTTP_BODY"
             exit 1
           fi
-          REVISION_ID=$(echo "$HTTP_BODY" | python3 -c "import json,sys; print(json.load(sys.stdin)['result']['revision_id'])")
+          REVISION_ID=$(echo "$HTTP_BODY" | python3 -I -c "import json,sys; print(json.load(sys.stdin)['result']['revision_id'])")
           echo "revision_id=$REVISION_ID" >> "$GITHUB_OUTPUT"
           echo "Submitted revision $REVISION_ID (HTTP $HTTP_CODE)"
 

@@ -41,7 +41,7 @@ class PublisherTests(unittest.TestCase):
 
     def build(self, history=None):
         (self.package / "manifest.json").write_text(json.dumps(self.meta))
-        with patch.dict(os.environ, {"GITHUB_REPOSITORY": "FOSSBilling/modules"}), patch.object(publisher.sys, "argv", ["build_payload.py", "example_module", "1.2.3", "example_module-v1.2.3"]), patch.object(publisher.subprocess, "run", return_value=SimpleNamespace(stdout=json.dumps(self.release))), patch.object(publisher, "fetch_existing_releases", return_value=history or []):
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": "FOSSBilling/modules"}), patch.object(publisher.sys, "argv", ["build_payload.py", "example_module", "1.2.3", "example_module-v1.2.3"]), patch.object(publisher.subprocess, "run", return_value=SimpleNamespace(stdout=json.dumps(self.release))), patch.object(publisher, "fetch_existing_releases", return_value=history):
             publisher.main()
         return json.loads(Path("payload-create.json").read_text()), json.loads(Path("payload-update.json").read_text())
 
@@ -78,6 +78,22 @@ class PublisherTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.build()
 
+    def test_readme_limit_matches_api_utf16_length(self):
+        (self.package / "README.md").write_text("x" * 100_001)
+        with self.assertRaises(SystemExit):
+            self.build()
+        (self.package / "README.md").write_text("😀" * 50_001)
+        with self.assertRaises(SystemExit):
+            self.build()
+        (self.package / "README.md").write_text("😀" * 50_000)
+        self.build()
+
+    def test_target_comes_from_the_history_read(self):
+        self.build()
+        self.assertEqual(json.loads(Path("payload-target.json").read_text()), {"exists": False})
+        self.build([{"tag": "1.0.0", "requires": self.meta["requires"]}])
+        self.assertEqual(json.loads(Path("payload-target.json").read_text()), {"exists": True})
+
     def test_requires_php(self):
         del self.meta["requires"]["php"]
         with self.assertRaises(SystemExit):
@@ -86,6 +102,17 @@ class PublisherTests(unittest.TestCase):
     def test_release_cap_is_preserved(self):
         history = [{"tag": f"0.0.{index}"} for index in range(101)]
         self.assertEqual(len(self.build(history)[0]["releases"]), 100)
+
+    def test_fetch_only_treats_404_as_a_new_extension(self):
+        for code in [404, 401, 429, 500]:
+            error = publisher.urllib.error.HTTPError("https://api.example.test", code, "error", {}, None)
+            self.addCleanup(error.close)
+            with self.subTest(code=code), patch.dict(os.environ, {"API_TOKEN": "test", "API_BASE_URL": "https://api.example.test"}), patch.object(publisher.urllib.request, "urlopen", side_effect=error):
+                if code == 404:
+                    self.assertIsNone(publisher.fetch_existing_releases("example"))
+                else:
+                    with self.assertRaises(SystemExit):
+                        publisher.fetch_existing_releases("example")
 
     def test_fetch_retains_requires_and_rejects_pre_migration_history(self):
         requirements = {"fossbilling": "^0.8 || ^1", "php": "^8", "modules": {"branding": "*"}}
