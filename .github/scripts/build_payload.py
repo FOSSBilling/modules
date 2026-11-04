@@ -9,6 +9,14 @@ release's .zip asset, and writes two API content files:
 * ``payload-update.json`` for PUT /extensions/{id} (identical except the
   ``id``, which that endpoint rejects as an unknown field).
 
+The new release entry is keyed by the plain version (``"0.8.9"``), not the
+git tag (``"branding-v0.8.9"``): the catalogue sorts and compares releases
+by semver tag on every read, and the extensions site derives the editable
+version from it. The entry is prepended to the extension's already
+published releases (fetched from the API when ``API_TOKEN`` is set) so the
+catalogue keeps its changelog history; without a token only the new entry
+is submitted.
+
 The catalogue API speaks its own type vocabulary, so the manifest type is
 translated here ("module" -> "mod"); unknown types fail loudly rather than
 being passed through.
@@ -21,9 +29,15 @@ import os
 import re
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 
 
 MAX_CONTENT_BYTES = 256 * 1024
+
+# Catalogue cap on releases per extension (ExtensionContentSchema); older
+# entries past this are dropped from the submitted history.
+MAX_RELEASES = 100
 
 # Manifest (manifest.json v1) type -> catalogue API type.
 TYPE_MAP = {"module": "mod"}
@@ -68,6 +82,87 @@ def min_core_version(constraint: object, manifest_path: str) -> str:
             f"to publish, got {constraint!r}"
         )
     return match.group(1)
+
+
+def fetch_existing_releases(ext_id: str) -> list:
+    """Fetch the extension's currently published releases for merge history.
+
+    Returns [] for a new extension (API 404) or when no API token is
+    configured (offline use). Any other failure is fatal: silently
+    submitting without history would wipe the catalogue's changelog.
+    Entries are reduced to the release fields the catalogue schema
+    accepts, so a newer API response shape can never fail validation.
+    """
+    api_token = os.environ.get("API_TOKEN", "")
+    api_base = os.environ.get("API_BASE_URL", "")
+    if not api_token or not api_base:
+        return []
+
+    http_request = urllib.request.Request(
+        f"{api_base.rstrip('/')}/extensions/{ext_id}",
+        headers={"Authorization": f"Bearer {api_token}"},
+    )
+    try:
+        with urllib.request.urlopen(http_request, timeout=30) as response:
+            body = json.load(response)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return []
+        fail(f"Could not fetch existing releases for '{ext_id}': HTTP {exc.code}")
+    except Exception as exc:
+        fail(f"Could not fetch existing releases for '{ext_id}': {exc}")
+    result = body.get("result") if isinstance(body, dict) else None
+    releases = result.get("releases") if isinstance(result, dict) else None
+    if not isinstance(releases, list):
+        fail(f"Catalogue response for '{ext_id}' has no releases list")
+    known = []
+    for entry in releases:
+        if not isinstance(entry, dict):
+            fail(f"Catalogue response for '{ext_id}' has a malformed release entry")
+        known.append(
+            {
+                key: entry[key]
+                for key in (
+                    "tag",
+                    "date",
+                    "download_url",
+                    "changelog_url",
+                    "min_fossbilling_version",
+                )
+                if key in entry
+            }
+        )
+    return known
+
+
+def canonical_tag(tag: object, ext_id: str) -> object:
+    """Collapse the pre-fix `<ext-id>-v<semver>` tag shape to its version.
+
+    Comparison-only: stored entries are never rewritten here.
+    """
+    if isinstance(tag, str) and tag.startswith(f"{ext_id}-v"):
+        return tag[len(ext_id) + 2 :]
+    return tag
+
+
+def merge_releases(new_release: dict, ext_id: str) -> list:
+    """Prepend the new release to the published history.
+
+    Same-tag re-runs replace in place so a retried publish is idempotent;
+    the catalogue caps the list at its 100-release maximum, oldest dropped.
+    A pre-fix entry keyed by git tag (`<id>-v<semver>`) counts as the same
+    release as its version, so re-publishing that version replaces the twin
+    instead of doubling it; other legacy entries are preserved as-is.
+    Ordering beyond newest-first does not matter here: the API re-sorts by
+    semver tag on every read.
+    """
+    merged = [new_release]
+    merged.extend(
+        entry
+        for entry in fetch_existing_releases(ext_id)
+        if canonical_tag(entry.get("tag"), ext_id) != new_release["tag"]
+    )
+    return merged[:MAX_RELEASES]
 
 
 def main() -> None:
@@ -143,8 +238,12 @@ def main() -> None:
         )
     download_url = zips[0]
 
+    # The catalogue keys releases by plain semver version, not by git tag:
+    # sorting, latest-release resolution, and the directory's edit form
+    # all compare `tag` with semver. The git tag stays reachable through
+    # the changelog and download URLs.
     new_release: dict = {
-        "tag": tag,
+        "tag": version,
         "date": published_at,
         "download_url": download_url,
         "min_fossbilling_version": min_version,
@@ -159,7 +258,7 @@ def main() -> None:
         "type": TYPE_MAP[meta["type"]],
         "name": meta["name"],
         "description": meta["description"],
-        "releases": [new_release],
+        "releases": merge_releases(new_release, ext_id),
         "website": meta["homepage_url"],
         "license": {"name": license_name, "spdx_id": license_name},
         "readme": readme,

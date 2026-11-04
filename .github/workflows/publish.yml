@@ -72,6 +72,8 @@ jobs:
       - name: Build extension payload
         env:
           GH_TOKEN: ${{ github.token }}
+          API_TOKEN: ${{ steps.token.outputs.access_token }}
+          API_BASE_URL: ${{ env.API_BASE_URL }}
         run: python3 .github/scripts/build_payload.py "${{ steps.target.outputs.extension_id }}" "${{ steps.target.outputs.version }}" "${{ steps.target.outputs.tag }}"
 
       - name: Submit revision (create or update)
