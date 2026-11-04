@@ -140,15 +140,29 @@ def merge_releases(new_release: dict, ext_id: str) -> list:
 
     Same-tag re-runs replace in place so a retried publish is idempotent;
     the catalogue caps the list at its 100-release maximum, oldest dropped.
+    A pre-fix entry keyed by git tag (`<id>-v<semver>`) counts as the same
+    release as its version, so re-publishing that version replaces the twin
+    instead of doubling it; other legacy entries are preserved as-is.
     Ordering beyond newest-first does not matter here: the API re-sorts by
     semver tag on every read.
     """
     merged = [new_release]
     merged.extend(
-        entry for entry in fetch_existing_releases(ext_id)
-        if entry.get("tag") != new_release["tag"]
+        entry
+        for entry in fetch_existing_releases(ext_id)
+        if canonical_tag(entry.get("tag"), ext_id) != new_release["tag"]
     )
     return merged[:MAX_RELEASES]
+
+
+def canonical_tag(tag: object, ext_id: str) -> object:
+    """Collapse the pre-fix `<ext-id>-v<semver>` tag shape to its version.
+
+    Comparison-only: stored entries are never rewritten here.
+    """
+    if isinstance(tag, str) and tag.startswith(f"{ext_id}-v"):
+        return tag[len(ext_id) + 2 :]
+    return tag
 
 
 def main() -> None:
