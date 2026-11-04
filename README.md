@@ -37,8 +37,11 @@ Only simple `>=X.Y.Z` fossbilling constraints can be published; anything
 fancier fails the payload build with an explicit error. `icon_url` is only
 submitted when it is an absolute `https://` URL.
 
-The release tag becomes the catalogue release entry: date and changelog link
-come from the GitHub release itself.
+The release becomes a new catalogue release entry keyed by the version:
+date, changelog link, and the distributable asset come from the GitHub
+release itself, and the entry is prepended to the extension's release
+history. A manual re-run via `workflow_dispatch` with the same tag
+replaces the entry in place.
 
 ## Secrets
 
