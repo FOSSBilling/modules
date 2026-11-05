@@ -69,7 +69,7 @@ else:
     print(json.dumps(response['body']) + '\\n' + str(response['code']))
 ''')
             curl.chmod(0o755)
-            env = {**os.environ, "PATH": f"{root}:{os.environ['PATH']}", "API_BASE_URL": "https://api.example.test/extensions/v2", "API_TOKEN": "offline", "EXT_ID": "example", "REVISION_ID": "revision", "GITHUB_OUTPUT": str(root / "outputs")}
+            env = {**os.environ, "PATH": f"{root}:{os.environ['PATH']}", "API_BASE_URL": "https://api.example.test/v2", "API_TOKEN": "offline", "EXT_ID": "example", "REVISION_ID": "revision", "GITHUB_OUTPUT": str(root / "outputs")}
             if hostile_module and after_api:
                 env.update({"HOSTILE_MODULE": hostile_module, "HOSTILE_SOURCE": hostile_source})
             result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", workflow_run(step)], cwd=root, env=env, capture_output=True, text=True)
@@ -131,7 +131,7 @@ else:
         for code in [200, 403, 409]:
             result, calls, _ = self.run_submit(True, [{"method": "POST", "code": code, "body": {"result": {"status": "approved"}}}], step="Approve revision")
             self.assertEqual(result.returncode == 0, code == 200, result.stderr)
-            self.assertEqual(calls, ["POST https://api.example.test/extensions/v2/extensions/example/revisions/revision/approve?notify=false"])
+            self.assertEqual(calls, ["POST https://api.example.test/v2/extensions/example/revisions/revision/approve?notify=false"])
 
     def test_retries_preserve_update_method_and_payload(self):
         result, calls, _ = self.run_submit(True, [{"method": "PUT", "code": 429, "body": {}}, {"method": "PUT", "code": 202, "body": {"result": {"revision_id": "revision", "status": "pending"}}}])
