@@ -34,8 +34,8 @@ release references those values, preserving earlier managed artifacts and
 external release history. The workflow then approves the revision using its
 existing `extensions:publish` permission.
 
-This publisher requires the package-enabled Extensions v2 API. Keep these changes
-local until that API is ready to deploy. The machine client must have
+Deploy the package-enabled Extensions v2 API before using this publisher in
+production. The machine client must have
 `extensions:push`, an active developer mapping and permission to publish for the
 same developer. Package ZIPs remain private until the revision is approved.
 
