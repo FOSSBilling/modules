@@ -47,11 +47,14 @@ foreach ($packages as $dir) {
     foreach (['author.url' => $m['author']['url'] ?? null, 'homepage_url' => $m['homepage_url'] ?? null] as $field => $url) {
         if ($url !== null && (!filter_var($url, FILTER_VALIDATE_URL) || !in_array(strtolower((string) parse_url($url, PHP_URL_SCHEME)), ['http', 'https'], true))) { $errors[] = $field . ' must be an http(s) URL'; }
     }
-    if (isset($m['icon_url'])) {
-        $icon = $m['icon_url'];
-        $resolved = realpath($dir . '/' . $icon) ?: $dir . '/' . $icon;
-        $base = realpath($dir);
-        if (!is_file($dir . '/' . $icon) || $base === false || !str_starts_with($resolved, $base . DIRECTORY_SEPARATOR)) { $errors[] = 'icon_url target missing or escapes package dir'; }
+    $icons = array_filter(['icon.svg', 'icon.png', 'icon.webp', 'icon.avif'], static fn ($icon) => is_file($dir . '/' . $icon));
+    if (count($icons) > 1) {
+        $errors[] = 'include only one package icon: icon.svg, icon.png, icon.webp or icon.avif';
+    }
+    foreach ($icons as $icon) {
+        if (is_link($dir . '/' . $icon)) {
+            $errors[] = 'package icons must not be symbolic links';
+        }
     }
     try { $parser->normalize($m['version'] ?? ''); if (str_starts_with((string) ($m['version'] ?? ''), 'v')) { $errors[] = 'version must not have a "v" prefix'; } }
     catch (\UnexpectedValueException) { $errors[] = 'version is not valid semver'; }

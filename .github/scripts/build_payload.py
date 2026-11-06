@@ -163,6 +163,12 @@ def main() -> None:
     manifest_path = os.path.join(ext_dir, "manifest.json")
     meta = json.loads(Path(manifest_path).read_text())
 
+    if "icon_url" in meta:
+        fail("Remove icon_url from manifest.json; use icon.svg, icon.png, icon.webp or icon.avif at the package root")
+    icons = [Path(ext_dir) / name for name in ("icon.svg", "icon.png", "icon.webp", "icon.avif") if (Path(ext_dir) / name).exists()]
+    if len(icons) > 1 or any(icon.is_symlink() or not icon.is_file() for icon in icons):
+        fail("Include at most one regular package icon")
+
     for field in (
         "manifest_version",
         "type",
@@ -263,9 +269,6 @@ def main() -> None:
         "version": version,
         "download_url": download_url,
     }
-    icon_url = meta.get("icon_url", "")
-    if isinstance(icon_url, str) and icon_url:
-        content["icon_url"] = icon_url
 
     if "homepage_url" in meta:
         content["homepage_url"] = meta["homepage_url"]

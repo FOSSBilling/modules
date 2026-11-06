@@ -30,7 +30,7 @@ class PublisherTests(unittest.TestCase):
             "manifest_version": 1, "id": "example_module", "type": "module",
             "name": "Example", "description": "Example module", "version": "1.2.3",
             "author": {"name": "Author", "url": "https://example.com"},
-            "license": "MIT OR Apache-2.0", "icon_url": "assets/icon.svg",
+            "license": "MIT OR Apache-2.0",
             "requires": {"fossbilling": "^0.8.9 || ^1.0", "php": ">=8.3 <9", "modules": {"branding": "^1.2"}},
         }
         (self.package / "README.md").write_text("# Example\n")
@@ -57,12 +57,31 @@ class PublisherTests(unittest.TestCase):
         self.assertEqual(create["readme"], "# Example\n")
         self.assertEqual(create, {**update, "id": "example_module"})
 
-    def test_optional_homepage_and_icon(self):
+    def test_optional_homepage_without_icon_metadata(self):
         self.meta["homepage_url"] = "https://example.com"
-        del self.meta["icon_url"]
         create, _ = self.build()
         self.assertEqual(create["homepage_url"], "https://example.com")
         self.assertNotIn("icon_url", create)
+
+    def test_icons_are_discovered_without_manifest_metadata(self):
+        for format in ("svg", "png", "webp", "avif"):
+            icon = self.package / f"icon.{format}"
+            icon.write_text("image bytes")
+            try:
+                create, _ = self.build()
+                self.assertNotIn("icon_url", create)
+            finally:
+                icon.unlink()
+
+    def test_rejects_duplicate_icons_and_manifest_icon_field(self):
+        (self.package / "icon.svg").write_text("svg")
+        (self.package / "icon.png").write_text("png")
+        with self.assertRaises(SystemExit):
+            self.build()
+        (self.package / "icon.png").unlink()
+        self.meta["icon_url"] = "icon.svg"
+        with self.assertRaises(SystemExit):
+            self.build()
 
     def test_reruns_replace_the_same_version_and_preserve_other_requirements(self):
         old = {"tag": "1.0.0", "date": "2026-01-01", "download_url": "https://example.com/old.zip", "requires": {"fossbilling": "~0.7", "php": "^8.2", "modules": {"old": "^1"}}}

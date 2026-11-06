@@ -26,7 +26,7 @@ Tag the release `<extension-id>-v<semver>` (e.g. `branding-v0.8.9`, version
 matching the package's `manifest.json`) and attach the distributable
 `.zip` as a release asset. The zip must contain the package directory
 contents at the archive root, with no wrapper folder, so it installs as-is.
-Publishing a release runs `.github/workflows/publish.yml`, which sends the manifest v1 fields directly to the extensions API and approves the new revision. `type: "module"`, string licenses, optional `homepage_url`, package-relative `icon_url`, author metadata, and the complete `requires` object are preserved. A manual run is available via `workflow_dispatch` with the same tag. Both triggers read package files from that tag, while using publisher tooling from the reviewed workflow ref.
+Publishing a release runs `.github/workflows/publish.yml`, which sends the manifest v1 fields directly to the extensions API and approves the new revision. `type: "module"`, string licenses, optional `homepage_url`, author metadata, and the complete `requires` object are preserved. A manual run is available via `workflow_dispatch` with the same tag. Both triggers read package files from that tag, while using publisher tooling from the reviewed workflow ref.
 
 FOSSBilling, PHP, and module constraints are retained verbatim, including compound Composer ranges. Each release stores its own requirements. Deploy the API manifest migration and matching extensions site before running this publisher; it refuses history without `requires` instead of discarding compatibility information.
 
@@ -58,3 +58,5 @@ The client authenticates with `client_credentials` and is bound to the
 extensions v2 README, "Machine publishing"). If a publish fails with 409,
 a revision is already pending review — a moderator resolves it in the
 review queue, then re-run the workflow.
+
+Extension icons are discovered at the package root: include one of `icon.svg`, `icon.png`, `icon.webp`, or `icon.avif`. Omit the icon for the generic fallback. Icon filenames are not declared in `manifest.json`.
