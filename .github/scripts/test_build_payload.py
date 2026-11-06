@@ -79,6 +79,26 @@ class PublisherTests(unittest.TestCase):
         self.assertNotIn("is_latest", create["releases"][0])
         self.assertTrue(create["releases"][1]["is_latest"])
 
+    def test_retry_keeps_a_selected_prerelease_selected(self):
+        self.meta["version"] = "1.3.0-beta.1"
+        history = [
+            {"tag": "1.3.0-beta.1", "artifact_id": "current", "is_latest": True},
+            {"tag": "1.0.0", "artifact_id": "stable", "download_url": "https://example.test/stable.zip", "requires": self.meta["requires"]},
+        ]
+        create, _ = self.build(history)
+        self.assertEqual(create["version"], "1.3.0-beta.1")
+        self.assertTrue(create["releases"][0]["is_latest"])
+        self.assertNotIn("is_latest", create["releases"][1])
+
+    def test_release_limit_retains_the_selected_release(self):
+        new = {"tag": "2.0.0-beta.1"}
+        history = [{"tag": f"1.0.{i}"} for i in range(100)]
+        history[-1]["is_latest"] = True
+        merged = publisher.merge_releases(new, "example_module", history)
+        self.assertEqual(len(merged), 100)
+        self.assertEqual(merged[0], new)
+        self.assertIn(history[-1], merged)
+
     def test_optional_homepage_without_icon_metadata(self):
         self.meta["homepage_url"] = "https://example.com"
         create, _ = self.build()

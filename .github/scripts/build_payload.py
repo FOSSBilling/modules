@@ -13,9 +13,8 @@ The new release entry is keyed by the plain version (``"0.8.9"``), not the
 git tag (``"branding-v0.8.9"``): the API sorts and compares releases
 by semver tag on every read, and the extensions site derives the editable
 version from it. The entry is prepended to the extension's already
-published releases (fetched from the API when ``API_TOKEN`` is set) so the
-API keeps its changelog history; without a token only the new entry
-is submitted.
+published releases so the API keeps its changelog history. Publishing
+requires ``API_TOKEN`` and ``API_BASE_URL``.
 
 The source ZIP and manifest are built by the package API before submission;
 release entries reference the returned immutable artifact and SHA-256.
@@ -24,14 +23,14 @@ Usage: build_payload.py <extension_id> <version> <tag>
 """
 
 import json
-import re
-import uuid
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
 import urllib.error
 import urllib.request
+import uuid
 
 from resolve_release import parse_release_tag
 
@@ -106,7 +105,8 @@ def fetch_existing_releases(ext_id: str) -> list | None:
     for entry in releases:
         if not isinstance(entry, dict):
             fail(f"Extensions API response for '{ext_id}' has a malformed release entry")
-        if not isinstance(entry.get("requires"), dict) or not all(isinstance(entry["requires"].get(key), str) and entry["requires"][key] for key in ("fossbilling",)):
+        requirements = entry.get("requires")
+        if not isinstance(requirements, dict) or not isinstance(requirements.get("fossbilling"), str) or not requirements["fossbilling"]:
             fail(f"Extensions API response for '{ext_id}' has a release without manifest requirements; deploy the API migration before publishing")
         known.append(
             {
@@ -156,7 +156,11 @@ def merge_releases(new_release: dict, ext_id: str, history: list) -> list:
     )
     if new_release.get("is_latest"):
         merged = [new_release, *({key: value for key, value in entry.items() if key != "is_latest"} for entry in merged[1:])]
-    return merged[:MAX_RELEASES]
+    retained = merged[:MAX_RELEASES]
+    selected = next((entry for entry in merged if entry.get("is_latest")), None)
+    if selected is not None and selected not in retained:
+        retained[-1] = selected
+    return retained
 
 
 def api_json(path: str, data: bytes | None = None, content_type: str | None = None) -> dict:
@@ -263,6 +267,10 @@ def main() -> None:
     if not isinstance(requires.get("php"), str) or not requires["php"].strip():
         fail(f"{manifest_path} requires.php must be a non-empty version constraint string")
 
+    license_name = meta["license"]
+    if not isinstance(license_name, str) or not license_name.strip():
+        fail(f"{manifest_path} license must be a non-empty license expression")
+
     readme_path = os.path.join(ext_dir, "README.md")
     if os.path.isfile(readme_path):
         readme = Path(readme_path).read_text()
@@ -320,15 +328,13 @@ def main() -> None:
     if html_url:
         new_release["changelog_url"] = html_url
 
-    license_name = meta["license"]
-    if not isinstance(license_name, str) or not license_name.strip():
-        fail(f"{manifest_path} license must be a non-empty license expression")
     managed = [entry for entry in history or [] if entry.get("artifact_id") and canonical_tag(entry.get("tag"), ext_id) != version]
     # Stable publishes become latest. Prereleases retain an existing managed selection.
     previous = next((entry for entry in managed if entry.get("is_latest")), None)
     previous = previous or next((entry for entry in managed if "-" not in entry["tag"].split("+", 1)[0]), None) or next(iter(managed), None)
     selected_manifest = meta
-    if "-" not in version.split("+", 1)[0] or previous is None:
+    current = next((entry for entry in history or [] if canonical_tag(entry.get("tag"), ext_id) == version), None)
+    if (current and current.get("is_latest")) or "-" not in version.split("+", 1)[0] or previous is None:
         new_release["is_latest"] = True
     else:
         selected_manifest = api_json(f"/packages/{previous['artifact_id']}")["manifest"]
