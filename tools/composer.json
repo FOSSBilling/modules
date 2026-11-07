@@ -1,6 +1,24 @@
 {
-  "name": "fossbilling/modules-tools",
-  "description": "Manifest validation tooling (CI + local)",
-  "require": {"php": ">=8.3", "composer/semver": "^3.5", "composer/spdx-licenses": "^1.5", "justinrainbow/json-schema": "^6.0"},
-  "config": {"sort-packages": true}
+    "name": "fossbilling/modules-tools",
+    "description": "FOSSBilling modules repository tooling.",
+    "license": "Apache-2.0",
+    "require": {
+        "php": "~8.5.0",
+        "composer/semver": "^3.5",
+        "composer/spdx-licenses": "^1.5",
+        "justinrainbow/json-schema": "^6.0",
+        "symfony/console": "^8.1",
+        "symfony/finder": "^8.1"
+    },
+    "autoload": {
+        "psr-4": {
+            "FOSSBilling\\Tools\\": "src/"
+        }
+    },
+    "config": {
+        "sort-packages": true,
+        "platform": {
+            "php": "8.5.0"
+        }
+    }
 }
