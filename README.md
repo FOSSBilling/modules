@@ -26,15 +26,38 @@ Tag the release `<extension-id>-v<semver>` (e.g. `branding-v0.8.9`, version
 matching the package's `manifest.json`) and attach the distributable
 `.zip` as a release asset. The zip must contain the package directory
 contents at the archive root, with no wrapper folder, so it installs as-is.
-Publishing a release runs `.github/workflows/publish.yml`, which sends the manifest v1 fields directly to the extensions API and approves the new revision. `type: "module"`, string licenses, optional `homepage_url`, package-relative `icon_url`, author metadata, and the complete `requires` object are preserved. A manual run is available via `workflow_dispatch` with the same tag. Both triggers read package files from that tag, while using publisher tooling from the reviewed workflow ref.
+Publishing runs the trusted tooling from `.github/workflows/publish.yml` against
+package metadata checked out from the release tag. It uploads the single GitHub
+ZIP asset and manifest to `POST /packages`; the directory queues validation and package preparation, returning a private job ID.
+The publisher polls that job until it has an immutable artifact ID, SHA-256 and
+download URL. A failed or timed-out job stops publication; a retry reuses queued
+or completed work. The submitted
+release references those values, preserving earlier managed artifacts and
+external release history. The workflow then approves the revision using its
+existing `extensions:publish` permission.
 
-FOSSBilling, PHP, and module constraints are retained verbatim, including compound Composer ranges. Each release stores its own requirements. Deploy the API manifest migration and matching extensions site before running this publisher; it refuses history without `requires` instead of discarding compatibility information.
+Deploy the package-enabled Extensions v2 API before using this publisher in
+production. Its queue, private storage and package mode must be configured
+and smoke-tested first. The machine client must have
+`extensions:push`, an active developer mapping and permission to publish for the
+same developer. Package ZIPs remain private until the revision is approved.
 
-The release becomes a new extensions directory release entry keyed by the version:
-date, changelog link, and the distributable asset come from the GitHub
-release itself, and the entry is prepended to the extension's release
-history. A manual re-run via `workflow_dispatch` with the same tag
-replaces the entry in place. A public 404 can also mean a delisted or unpublished extension: if creation then conflicts, publishing stops for manual correction instead of updating without its release history. Once the extension is public, retry to fetch its history first.
+Stable releases become the selected latest release. Prereleases retain the
+previous managed selection when one exists; the listing's manifest metadata
+continues to describe that selected package. A rerun of a version must upload
+identical source bytes. The API reuses an identical artifact and rejects changed
+source bytes for that version. Publish changed files under a new version.
+
+The publisher refuses source ZIPs over 5 MiB, ambiguous releases with multiple ZIP
+assets, unexpected artifact URLs and mismatched manifests. FOSSBilling, PHP and
+module constraints remain unchanged. Existing release history may omit PHP;
+new module manifests must still declare it. The readme, source and changelog links
+remain directory metadata outside the generated manifest.
+
+Publishing reads existing public release history before submitting. A public
+404 may mean a delisted or unpublished extension: a subsequent create conflict
+stops publishing rather than switching to an update without that history.
+Resolve the pending or hidden listing before retrying.
 
 ## Secrets
 
@@ -58,3 +81,5 @@ The client authenticates with `client_credentials` and is bound to the
 extensions v2 README, "Machine publishing"). If a publish fails with 409,
 a revision is already pending review — a moderator resolves it in the
 review queue, then re-run the workflow.
+
+Extension icons are discovered at the package root: include one of `icon.svg`, `icon.png`, `icon.webp`, or `icon.avif`. Omit the icon for the generic fallback. Icon filenames are not declared in `manifest.json`.

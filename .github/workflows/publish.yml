@@ -55,6 +55,7 @@ jobs:
             echo "::error::Token request failed: $RESP"
             exit 1
           fi
+          echo "::add-mask::$ACCESS"
           echo "access_token=$ACCESS" >> "$GITHUB_OUTPUT"
         env:
           PUBLISHER_CLIENT_ID: ${{ vars.MODULES_PUBLISHER_CLIENT_ID }}

@@ -13,22 +13,25 @@ The new release entry is keyed by the plain version (``"0.8.9"``), not the
 git tag (``"branding-v0.8.9"``): the API sorts and compares releases
 by semver tag on every read, and the extensions site derives the editable
 version from it. The entry is prepended to the extension's already
-published releases (fetched from the API when ``API_TOKEN`` is set) so the
-API keeps its changelog history; without a token only the new entry
-is submitted.
+published releases so the API keeps its changelog history. Publishing
+requires ``API_TOKEN`` and ``API_BASE_URL``.
 
-The manifest metadata is sent unchanged using the Extensions v2 contract.
+The source ZIP and manifest are built by the package API before submission;
+release entries reference the returned immutable artifact and SHA-256.
 
 Usage: build_payload.py <extension_id> <version> <tag>
 """
 
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
+import uuid
 
 from resolve_release import parse_release_tag
 
@@ -69,18 +72,11 @@ def find_package_dir(ext_id: str) -> str:
 
 
 def fetch_existing_releases(ext_id: str) -> list | None:
-    """Fetch the extension's currently published releases for merge history.
-
-    Returns None for a new extension (API 404) or when no API token is
-    configured (offline use). Any other failure is fatal: silently
-    submitting without history would wipe the extension's changelog.
-    Entries are reduced to the release fields the API schema
-    accepts, so a newer API response shape can never fail validation.
-    """
+    """Read published releases; only a 404 means the extension is new."""
     api_token = os.environ.get("API_TOKEN", "")
     api_base = os.environ.get("API_BASE_URL", "")
     if not api_token or not api_base:
-        return None
+        fail("API_TOKEN and API_BASE_URL are required to publish releases")
 
     http_request = urllib.request.Request(
         f"{api_base.rstrip('/')}/extensions/{ext_id}",
@@ -99,56 +95,109 @@ def fetch_existing_releases(ext_id: str) -> list | None:
     releases = result.get("releases") if isinstance(result, dict) else None
     if not isinstance(releases, list):
         fail(f"Extensions API response for '{ext_id}' has no releases list")
-    known = []
-    for entry in releases:
-        if not isinstance(entry, dict):
-            fail(f"Extensions API response for '{ext_id}' has a malformed release entry")
-        if not isinstance(entry.get("requires"), dict) or not all(isinstance(entry["requires"].get(key), str) and entry["requires"][key] for key in ("fossbilling", "php")):
-            fail(f"Extensions API response for '{ext_id}' has a release without manifest requirements; deploy the API migration before publishing")
-        known.append(
-            {
-                key: entry[key]
-                for key in (
-                    "tag",
-                    "date",
-                    "download_url",
-                    "changelog_url",
-                    "requires",
-                )
-                if key in entry
-            }
-        )
-    return known
+    if not all(isinstance(entry, dict) for entry in releases):
+        fail(f"Extensions API response for '{ext_id}' has a malformed release entry")
+    return releases
 
 
-def canonical_tag(tag: object, ext_id: str) -> object:
-    """Collapse the pre-fix `<ext-id>-v<semver>` tag shape to its version.
-
-    Comparison-only: stored entries are never rewritten here.
-    """
-    if isinstance(tag, str) and tag.startswith(f"{ext_id}-v"):
-        return tag[len(ext_id) + 2 :]
-    return tag
-
-
-def merge_releases(new_release: dict, ext_id: str, history: list) -> list:
-    """Prepend the new release to the published history.
-
-    Same-tag re-runs replace in place so a retried publish is idempotent;
-    the API caps the list at its 100-release maximum, oldest dropped.
-    A pre-fix entry keyed by git tag (`<id>-v<semver>`) counts as the same
-    release as its version, so re-publishing that version replaces the twin
-    instead of doubling it; other legacy entries are preserved as-is.
-    Ordering beyond newest-first does not matter here: the API re-sorts by
-    semver tag on every read.
-    """
+def merge_releases(new_release: dict, history: list) -> list:
+    """Replace a same-version release and retain at most MAX_RELEASES entries."""
     merged = [new_release]
     merged.extend(
         entry
         for entry in history
-        if canonical_tag(entry.get("tag"), ext_id) != new_release["tag"]
+        if entry.get("tag") != new_release["tag"]
     )
-    return merged[:MAX_RELEASES]
+    if new_release.get("is_latest"):
+        merged = [new_release, *({key: value for key, value in entry.items() if key != "is_latest"} for entry in merged[1:])]
+    retained = merged[:MAX_RELEASES]
+    selected = next((entry for entry in merged if entry.get("is_latest")), None)
+    if selected is not None and selected not in retained:
+        retained[-1] = selected
+    return retained
+
+
+def api_json(path: str, data: bytes | None = None, content_type: str | None = None, *, timeout: float = 60) -> dict:
+    token = os.environ.get("API_TOKEN", "")
+    base = os.environ.get("API_BASE_URL", "").rstrip("/")
+    if not token or not base:
+        fail("API_TOKEN and API_BASE_URL are required to build directory packages")
+    headers = {"Authorization": f"Bearer {token}"}
+    if content_type:
+        headers["Content-Type"] = content_type
+    request = urllib.request.Request(base + path, data=data, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read(MAX_CONTENT_BYTES + 1)
+            if len(body) > MAX_CONTENT_BYTES:
+                fail("Package API response exceeds its size limit")
+            document = json.loads(body)
+            result = document.get("result") if isinstance(document, dict) else None
+    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+        fail(f"Package API request failed: {exc}")
+    if not isinstance(result, dict):
+        fail("Package API returned no artifact metadata")
+    return result
+
+
+def build_package(manifest: dict, source_url: str) -> dict:
+    if not os.environ.get("API_TOKEN") or not os.environ.get("API_BASE_URL"):
+        fail("API_TOKEN and API_BASE_URL are required to build directory packages")
+    expected = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/"
+    if not source_url.startswith(expected):
+        fail("Source ZIP must be a release asset in this GitHub repository")
+    try:
+        with urllib.request.urlopen(source_url, timeout=60) as response:
+            source = response.read(5 * 1024 * 1024 + 1)
+    except (urllib.error.URLError, TimeoutError) as exc:
+        fail(f"Source ZIP download failed: {exc}")
+    if len(source) > 5 * 1024 * 1024:
+        fail("Source ZIP exceeds the 5 MiB package limit")
+    boundary = "package-" + uuid.uuid4().hex
+    data = (
+        f'--{boundary}\r\nContent-Disposition: form-data; name="manifest"\r\nContent-Type: application/json\r\n\r\n'.encode()
+        + json.dumps(manifest, ensure_ascii=False).encode()
+        + f'\r\n--{boundary}\r\nContent-Disposition: form-data; name="source"; filename="source.zip"\r\nContent-Type: application/zip\r\n\r\n'.encode()
+        + source + f'\r\n--{boundary}--\r\n'.encode()
+    )
+    job = api_json("/packages", data, f"multipart/form-data; boundary={boundary}")
+    try:
+        job_id = str(uuid.UUID(job["id"]))
+    except (KeyError, ValueError, TypeError, AttributeError):
+        fail("Package API returned an invalid job ID")
+    deadline = time.monotonic() + 180
+    artifact = None
+    while True:
+        if job.get("id") != job_id or job.get("extension_id") != manifest["id"]:
+            fail("Package processing job does not match the submitted extension")
+        if job.get("status") == "ready":
+            artifact = job.get("artifact")
+            break
+        if job.get("status") == "failed":
+            error = job.get("error")
+            message = error.get("message") if isinstance(error, dict) else None
+            fail(f"Package preparation failed: {message or 'unknown error'}")
+        if job.get("status") not in ("queued", "processing"):
+            fail("Package API returned an invalid processing state")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(1, remaining))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        job = api_json(f"/package-jobs/{job_id}", timeout=min(60, remaining))
+    if not isinstance(artifact, dict):
+        fail(f"Package job {job_id} is still processing; retry publishing to reuse it")
+    try:
+        artifact_id = str(uuid.UUID(artifact["id"]))
+    except (KeyError, ValueError, TypeError, AttributeError):
+        fail("Package API returned an invalid artifact ID")
+    if artifact.get("manifest") != manifest or not isinstance(artifact.get("sha256"), str) or not re.fullmatch(r"[a-f0-9]{64}", artifact["sha256"]):
+        fail("Package API artifact does not match the submitted manifest or checksum format")
+    if artifact.get("download_url") != os.environ["API_BASE_URL"].rstrip("/") + f"/packages/{artifact_id}/download":
+        fail("Package API returned an unexpected download URL")
+    return artifact
 
 
 def main() -> None:
@@ -162,6 +211,12 @@ def main() -> None:
     ext_dir = find_package_dir(ext_id)
     manifest_path = os.path.join(ext_dir, "manifest.json")
     meta = json.loads(Path(manifest_path).read_text())
+
+    if "icon_url" in meta:
+        fail("Remove icon_url from manifest.json; use icon.svg, icon.png, icon.webp or icon.avif at the package root")
+    icons = [Path(ext_dir) / name for name in ("icon.svg", "icon.png", "icon.webp", "icon.avif") if (Path(ext_dir) / name).exists()]
+    if len(icons) > 1 or any(icon.is_symlink() or not icon.is_file() for icon in icons):
+        fail("Include at most one regular package icon")
 
     for field in (
         "manifest_version",
@@ -193,6 +248,10 @@ def main() -> None:
     requires = meta["requires"]
     if not isinstance(requires.get("php"), str) or not requires["php"].strip():
         fail(f"{manifest_path} requires.php must be a non-empty version constraint string")
+
+    license_name = meta["license"]
+    if not isinstance(license_name, str) or not license_name.strip():
+        fail(f"{manifest_path} license must be a non-empty license expression")
 
     readme_path = os.path.join(ext_dir, "README.md")
     if os.path.isfile(readme_path):
@@ -230,7 +289,11 @@ def main() -> None:
             "(archive root must be the package directory contents, with no "
             "wrapper folder) before publishing."
         )
-    download_url = zips[0]
+    if len(zips) != 1:
+        fail("Release must have exactly one source ZIP asset")
+    history = fetch_existing_releases(ext_id)
+    artifact = build_package(meta, zips[0])
+    download_url = artifact["download_url"]
 
     # The API keys releases by plain semver version, not by git tag:
     # sorting, latest-release resolution, and the directory's edit form
@@ -238,37 +301,35 @@ def main() -> None:
     # the changelog and download URLs.
     new_release: dict = {
         "tag": version,
-        "date": published_at,
+        "date": published_at[:10] if published_at else "",
         "download_url": download_url,
         "requires": requires,
+        "artifact_id": artifact["id"],
+        "sha256": artifact["sha256"],
     }
     if html_url:
         new_release["changelog_url"] = html_url
 
-    license_name = meta["license"]
-    if not isinstance(license_name, str) or not license_name.strip():
-        fail(f"{manifest_path} license must be a non-empty license expression")
-    history = fetch_existing_releases(ext_id)
-    content: dict = {
-        "manifest_version": 1,
-        "type": meta["type"],
-        "author": meta["author"],
-        "requires": requires,
-        "name": meta["name"],
-        "description": meta["description"],
-        "releases": merge_releases(new_release, ext_id, history or []),
-        "license": license_name,
+    other_releases = [entry for entry in history or [] if entry.get("tag") != version]
+    # Stable publishes become latest. Prereleases retain an existing selection.
+    previous = next((entry for entry in other_releases if entry.get("is_latest")), None)
+    previous = previous or next((entry for entry in other_releases if "-" not in entry["tag"].split("+", 1)[0]), None) or next(iter(other_releases), None)
+    selected_manifest = meta
+    current = next((entry for entry in history or [] if entry.get("tag") == version), None)
+    if (current and current.get("is_latest")) or "-" not in version.split("+", 1)[0] or previous is None:
+        new_release["is_latest"] = True
+    else:
+        selected_manifest = api_json(f"/packages/{previous['artifact_id']}")["manifest"]
+        previous["is_latest"] = True
+    content = {key: value for key, value in selected_manifest.items() if key != "id"}
+    content.update({
+        "releases": merge_releases(new_release, history or []),
         "readme": readme,
         "source": {"type": "github", "repo": os.environ.get("GITHUB_REPOSITORY", "FOSSBilling/modules")},
-        "version": version,
-        "download_url": download_url,
-    }
-    icon_url = meta.get("icon_url", "")
-    if isinstance(icon_url, str) and icon_url:
-        content["icon_url"] = icon_url
-
-    if "homepage_url" in meta:
-        content["homepage_url"] = meta["homepage_url"]
+    })
+    selected_release = next(entry for entry in content["releases"] if entry.get("is_latest"))
+    content["version"] = selected_release["tag"]
+    content["download_url"] = selected_release["download_url"]
 
     create_content = dict(content)
     create_content["id"] = ext_id

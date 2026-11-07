@@ -110,8 +110,9 @@ else:
             env = {**os.environ, 'PATH': f"{bin_dir}:{os.environ['PATH']}", 'PYTHONPATH': str(release), 'API_TOKEN': 'offline', 'API_BASE_URL': '', 'GITHUB_REPOSITORY': 'FOSSBilling/modules', 'EXT_ID': 'branding', 'VERSION': version, 'RELEASE_TAG': f'branding-v{version}'}
             result = subprocess.run(['bash', '-e', '-c', workflow_run('Build extension payload')], cwd=release, env=env, capture_output=True, text=True)
             self.assertFalse((release / 'hostile-imported').exists(), 'Tagged module imported via PYTHONPATH')
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(json.loads((release / 'payload-create.json').read_text())['id'], 'branding')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("API_TOKEN and API_BASE_URL are required", result.stdout)
+            self.assertFalse((release / 'payload-create.json').exists())
 
     def test_create_and_update_accept_the_merged_api_statuses(self):
         for exists, method, code in [(False, "POST", 201), (True, "PUT", 202)]:
