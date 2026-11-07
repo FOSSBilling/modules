@@ -62,6 +62,7 @@ class PublisherTests(unittest.TestCase):
         release = create["releases"][0]
         self.assertEqual(release["artifact_id"], "134cf413-b5ab-4f57-b2ad-520020af880d")
         self.assertEqual(release["sha256"], "a" * 64)
+        self.assertEqual(release["date"], self.release["published_at"][:10])
         self.assertTrue(release["is_latest"])
         self.assertEqual(create["download_url"], release["download_url"])
         self.assertNotIn("is_latest", create["releases"][1])
@@ -94,7 +95,7 @@ class PublisherTests(unittest.TestCase):
         new = {"tag": "2.0.0-beta.1"}
         history = [{"tag": f"1.0.{i}"} for i in range(100)]
         history[-1]["is_latest"] = True
-        merged = publisher.merge_releases(new, "example_module", history)
+        merged = publisher.merge_releases(new, history)
         self.assertEqual(len(merged), 100)
         self.assertEqual(merged[0], new)
         self.assertIn(history[-1], merged)
@@ -127,7 +128,7 @@ class PublisherTests(unittest.TestCase):
 
     def test_reruns_replace_the_same_version_and_preserve_other_requirements(self):
         old = {"tag": "1.0.0", "date": "2026-01-01", "download_url": "https://example.com/old.zip", "requires": {"fossbilling": "~0.7", "php": "^8.2", "modules": {"old": "^1"}}}
-        create, _ = self.build([{"tag": "example_module-v1.2.3"}, old])
+        create, _ = self.build([{"tag": "1.2.3"}, old])
         self.assertEqual([entry["tag"] for entry in create["releases"]], ["1.2.3", "1.0.0"])
         self.assertEqual(create["releases"][1], old)
 
@@ -175,16 +176,14 @@ class PublisherTests(unittest.TestCase):
                     with self.assertRaises(SystemExit):
                         publisher.fetch_existing_releases("example")
 
-    def test_fetch_retains_requires_and_rejects_pre_migration_history(self):
-        requirements = {"fossbilling": "^0.8 || ^1", "php": "^8", "modules": {"branding": "*"}}
-        entry = {"tag": "1.0.0", "requires": requirements, "unknown": "ignored"}
+    def test_fetch_returns_current_release_fields_unchanged(self):
+        entry = {"tag": "1.0.0", "requires": {"fossbilling": "^0.8", "php": "^8"}, "artifact_id": "package", "sha256": "a" * 64}
         with patch.dict(os.environ, {"API_TOKEN": "test", "API_BASE_URL": "https://api.example.test"}), patch.object(publisher.urllib.request, "urlopen", return_value=io.StringIO(json.dumps({"result": {"releases": [entry]}}))):
-            self.assertEqual(publisher.fetch_existing_releases("example"), [{"tag": "1.0.0", "requires": requirements}])
-        with patch.dict(os.environ, {"API_TOKEN": "test", "API_BASE_URL": "https://api.example.test"}), patch.object(publisher.urllib.request, "urlopen", return_value=io.StringIO(json.dumps({"result": {"releases": [{"tag": "old", "min_fossbilling_version": "0.6"}]}}))):
-            with self.assertRaises(SystemExit):
-                publisher.fetch_existing_releases("example")
+            self.assertEqual(publisher.fetch_existing_releases("example"), [entry])
 
-
+    def test_missing_credentials_stop_history_reads(self):
+        with patch.dict(os.environ, {"API_TOKEN": "", "API_BASE_URL": ""}), self.assertRaises(SystemExit):
+            publisher.fetch_existing_releases("example")
 
 
 class PackageApiTests(unittest.TestCase):
@@ -199,7 +198,7 @@ class PackageApiTests(unittest.TestCase):
         calls = []
         def open_url(request, **kwargs):
             calls.append(request)
-            return io.BytesIO(b"source ZIP" if isinstance(request, str) else json.dumps({"result": self.artifact}).encode())
+            return io.BytesIO(b"source ZIP" if isinstance(request, str) else json.dumps({"result": {"id":"44444444-4444-4444-8444-444444444444","extension_id":"example","status":"ready","artifact":self.artifact}}).encode())
         with patch.object(publisher.urllib.request, "urlopen", side_effect=open_url):
             self.assertEqual(publisher.build_package(self.manifest, self.source), self.artifact)
         self.assertEqual(calls[0], self.source)
@@ -208,6 +207,26 @@ class PackageApiTests(unittest.TestCase):
         self.assertIn(b'name="manifest"', calls[1].data)
         self.assertIn(json.dumps(self.manifest).encode(), calls[1].data)
         self.assertIn(b"source ZIP", calls[1].data)
+
+    def test_polls_a_queued_package_before_returning_the_artifact(self):
+        job = {"id": "44444444-4444-4444-8444-444444444444", "extension_id": "example", "status": "queued", "artifact": None}
+        ready = {**job, "status": "ready", "artifact": self.artifact}
+        with patch.object(publisher.urllib.request, "urlopen", return_value=io.BytesIO(b"ZIP")), patch.object(publisher, "api_json", side_effect=[job, {**job, "status": "processing"}, ready]) as request, patch.object(publisher.time, "sleep"):
+            self.assertEqual(publisher.build_package(self.manifest, self.source), self.artifact)
+        self.assertEqual(request.call_args_list[-1].args, ("/package-jobs/" + job["id"],))
+
+    def test_stops_polling_at_the_deadline(self):
+        job = {"id": "44444444-4444-4444-8444-444444444444", "extension_id": "example", "status": "queued"}
+        with patch.object(publisher.urllib.request, "urlopen", return_value=io.BytesIO(b"ZIP")), patch.object(publisher, "api_json", return_value=job) as request, patch.object(publisher.time, "monotonic", side_effect=[0, 179, 179.5, 180]), patch.object(publisher.time, "sleep"):
+            with self.assertRaises(SystemExit):
+                publisher.build_package(self.manifest, self.source)
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(request.call_args.kwargs, {"timeout": 0.5})
+
+    def test_failed_job_stops_publishing(self):
+        job = {"id": "44444444-4444-4444-8444-444444444444", "extension_id": "example", "status": "failed", "error": {"message": "Invalid archive"}}
+        with patch.object(publisher.urllib.request, "urlopen", return_value=io.BytesIO(b"ZIP")), patch.object(publisher, "api_json", return_value=job), self.assertRaises(SystemExit):
+            publisher.build_package(self.manifest, self.source)
 
     def test_rejects_oversized_sources_before_uploading(self):
         with patch.object(publisher.urllib.request, "urlopen", return_value=io.BytesIO(b"x" * (5 * 1024 * 1024 + 1))) as request:
@@ -218,7 +237,7 @@ class PackageApiTests(unittest.TestCase):
     def test_rejects_mismatched_artifact_metadata_and_foreign_download_urls(self):
         for replacement in [{"manifest": {}}, {"sha256": "invalid"}, {"download_url": "https://other.test/package.zip"}]:
             artifact = {**self.artifact, **replacement}
-            with self.subTest(replacement=replacement), patch.object(publisher.urllib.request, "urlopen", return_value=io.BytesIO(b"ZIP")), patch.object(publisher, "api_json", return_value=artifact), self.assertRaises(SystemExit):
+            with self.subTest(replacement=replacement), patch.object(publisher.urllib.request, "urlopen", return_value=io.BytesIO(b"ZIP")), patch.object(publisher, "api_json", return_value={"id":"44444444-4444-4444-8444-444444444444","extension_id":"example","status":"ready","artifact":artifact}), self.assertRaises(SystemExit):
                 publisher.build_package(self.manifest, self.source)
 
 if __name__ == "__main__":

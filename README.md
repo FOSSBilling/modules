@@ -28,14 +28,17 @@ matching the package's `manifest.json`) and attach the distributable
 contents at the archive root, with no wrapper folder, so it installs as-is.
 Publishing runs the trusted tooling from `.github/workflows/publish.yml` against
 package metadata checked out from the release tag. It uploads the single GitHub
-ZIP asset and manifest to `POST /packages`; the directory builds the distributable
-and returns an immutable artifact ID, SHA-256 and download URL. The submitted
+ZIP asset and manifest to `POST /packages`; the directory queues validation and package preparation, returning a private job ID.
+The publisher polls that job until it has an immutable artifact ID, SHA-256 and
+download URL. A failed or timed-out job stops publication; a retry reuses queued
+or completed work. The submitted
 release references those values, preserving earlier managed artifacts and
 external release history. The workflow then approves the revision using its
 existing `extensions:publish` permission.
 
 Deploy the package-enabled Extensions v2 API before using this publisher in
-production. The machine client must have
+production. Its queue, private storage and package mode must be configured
+and smoke-tested first. The machine client must have
 `extensions:push`, an active developer mapping and permission to publish for the
 same developer. Package ZIPs remain private until the revision is approved.
 
