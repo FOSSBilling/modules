@@ -47,15 +47,19 @@ class PublisherTests(unittest.TestCase):
 
     def test_preserves_manifest_metadata_and_compound_requirements(self):
         create, update = self.build()
+        self.assertEqual(create["identifier"], self.meta["id"])
+        self.assertNotIn("id", create)
+        self.assertNotIn("identifier", update)
         for field in self.meta:
-            self.assertEqual(create[field], self.meta[field])
+            if field != "id":
+                self.assertEqual(create[field], self.meta[field])
         self.assertNotIn("website", create)
         self.assertNotIn("homepage_url", create)
         self.assertNotIn("id", update)
         self.assertEqual(create["releases"][0]["requires"], self.meta["requires"])
         self.assertNotIn("min_fossbilling_version", create["releases"][0])
         self.assertEqual(create["readme"], "# Example\n")
-        self.assertEqual(create, {**update, "id": "example_module"})
+        self.assertEqual(create, {**update, "identifier": "example_module"})
 
     def test_release_references_the_directory_built_package(self):
         create, _ = self.build([{ "tag": "1.0.0", "is_latest": True, "artifact_id": "old", "sha256": "b" * 64, "requires": self.meta["requires"] }])
@@ -198,7 +202,7 @@ class PackageApiTests(unittest.TestCase):
         calls = []
         def open_url(request, **kwargs):
             calls.append(request)
-            return io.BytesIO(b"source ZIP" if isinstance(request, str) else json.dumps({"result": {"id":"44444444-4444-4444-8444-444444444444","extension_id":"example","status":"ready","artifact":self.artifact}}).encode())
+            return io.BytesIO(b"source ZIP" if isinstance(request, str) else json.dumps({"result": {"id":"44444444-4444-4444-8444-444444444444","extension_identifier":"example","status":"ready","artifact":self.artifact}}).encode())
         with patch.object(publisher.urllib.request, "urlopen", side_effect=open_url):
             self.assertEqual(publisher.build_package(self.manifest, self.source), self.artifact)
         self.assertEqual(calls[0], self.source)
@@ -209,14 +213,14 @@ class PackageApiTests(unittest.TestCase):
         self.assertIn(b"source ZIP", calls[1].data)
 
     def test_polls_a_queued_package_before_returning_the_artifact(self):
-        job = {"id": "44444444-4444-4444-8444-444444444444", "extension_id": "example", "status": "queued", "artifact": None}
+        job = {"id": "44444444-4444-4444-8444-444444444444", "extension_identifier": "example", "status": "queued", "artifact": None}
         ready = {**job, "status": "ready", "artifact": self.artifact}
         with patch.object(publisher.urllib.request, "urlopen", return_value=io.BytesIO(b"ZIP")), patch.object(publisher, "api_json", side_effect=[job, {**job, "status": "processing"}, ready]) as request, patch.object(publisher.time, "sleep"):
             self.assertEqual(publisher.build_package(self.manifest, self.source), self.artifact)
         self.assertEqual(request.call_args_list[-1].args, ("/package-jobs/" + job["id"],))
 
     def test_stops_polling_at_the_deadline(self):
-        job = {"id": "44444444-4444-4444-8444-444444444444", "extension_id": "example", "status": "queued"}
+        job = {"id": "44444444-4444-4444-8444-444444444444", "extension_identifier": "example", "status": "queued"}
         with patch.object(publisher.urllib.request, "urlopen", return_value=io.BytesIO(b"ZIP")), patch.object(publisher, "api_json", return_value=job) as request, patch.object(publisher.time, "monotonic", side_effect=[0, 179, 179.5, 180]), patch.object(publisher.time, "sleep"):
             with self.assertRaises(SystemExit):
                 publisher.build_package(self.manifest, self.source)
@@ -224,7 +228,7 @@ class PackageApiTests(unittest.TestCase):
         self.assertEqual(request.call_args.kwargs, {"timeout": 0.5})
 
     def test_failed_job_stops_publishing(self):
-        job = {"id": "44444444-4444-4444-8444-444444444444", "extension_id": "example", "status": "failed", "error": {"message": "Invalid archive"}}
+        job = {"id": "44444444-4444-4444-8444-444444444444", "extension_identifier": "example", "status": "failed", "error": {"message": "Invalid archive"}}
         with patch.object(publisher.urllib.request, "urlopen", return_value=io.BytesIO(b"ZIP")), patch.object(publisher, "api_json", return_value=job), self.assertRaises(SystemExit):
             publisher.build_package(self.manifest, self.source)
 
@@ -237,7 +241,7 @@ class PackageApiTests(unittest.TestCase):
     def test_rejects_mismatched_artifact_metadata_and_foreign_download_urls(self):
         for replacement in [{"manifest": {}}, {"sha256": "invalid"}, {"download_url": "https://other.test/package.zip"}]:
             artifact = {**self.artifact, **replacement}
-            with self.subTest(replacement=replacement), patch.object(publisher.urllib.request, "urlopen", return_value=io.BytesIO(b"ZIP")), patch.object(publisher, "api_json", return_value={"id":"44444444-4444-4444-8444-444444444444","extension_id":"example","status":"ready","artifact":artifact}), self.assertRaises(SystemExit):
+            with self.subTest(replacement=replacement), patch.object(publisher.urllib.request, "urlopen", return_value=io.BytesIO(b"ZIP")), patch.object(publisher, "api_json", return_value={"id":"44444444-4444-4444-8444-444444444444","extension_identifier":"example","status":"ready","artifact":artifact}), self.assertRaises(SystemExit):
                 publisher.build_package(self.manifest, self.source)
 
 if __name__ == "__main__":
