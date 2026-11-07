@@ -18,7 +18,7 @@ Branding/
 `manifest.json` follows the v1 spec (`manifest_version: 1`,
 `type: "module"`). The canonical spec is
 [`manifest.schema.json`](./manifest.schema.json); every package is
-validated against it (plus semantic checks in `tools/validate.php`) by CI.
+validated against it (plus semantic checks via `tools/bin/console manifest:validate`) by CI.
 
 ## Releasing
 
