@@ -111,7 +111,7 @@ else:
             result = subprocess.run(['bash', '-e', '-c', workflow_run('Build extension payload')], cwd=release, env=env, capture_output=True, text=True)
             self.assertFalse((release / 'hostile-imported').exists(), 'Tagged module imported via PYTHONPATH')
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(json.loads((release / 'payload-create.json').read_text())['id'], 'branding')
+            self.assertEqual(json.loads((release / 'payload-create.json').read_text())['identifier'], 'branding')
 
     def test_create_and_update_accept_the_merged_api_statuses(self):
         for exists, method, code in [(False, "POST", 201), (True, "PUT", 202)]:

@@ -58,3 +58,6 @@ The client authenticates with `client_credentials` and is bound to the
 extensions v2 README, "Machine publishing"). If a publish fails with 409,
 a revision is already pending review — a moderator resolves it in the
 review queue, then re-run the workflow.
+
+Directory creation sends the manifest’s public `id` as `identifier`. Developer
+publisher bindings use the UUID `id` returned by the developer profile API.

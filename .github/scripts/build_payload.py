@@ -4,10 +4,10 @@ Reads the package's manifest.json (v1 spec, see manifest.schema.json),
 plus the package README, resolves the download URL from the GitHub
 release's .zip asset, and writes two API content files:
 
-* ``payload-create.json`` for POST /extensions (includes the ``id`` the
+* ``payload-create.json`` for POST /extensions (includes the ``identifier`` the
   API requires on create),
 * ``payload-update.json`` for PUT /extensions/{id} (identical except the
-  ``id``, which that endpoint rejects as an unknown field).
+  ``identifier``, which that endpoint rejects as an unknown field).
 
 The new release entry is keyed by the plain version (``"0.8.9"``), not the
 git tag (``"branding-v0.8.9"``): the API sorts and compares releases
@@ -271,7 +271,7 @@ def main() -> None:
         content["homepage_url"] = meta["homepage_url"]
 
     create_content = dict(content)
-    create_content["id"] = ext_id
+    create_content["identifier"] = ext_id
 
     size = len(json.dumps(create_content, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
     if size > MAX_CONTENT_BYTES:
