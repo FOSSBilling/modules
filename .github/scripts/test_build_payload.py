@@ -47,15 +47,19 @@ class PublisherTests(unittest.TestCase):
 
     def test_preserves_manifest_metadata_and_compound_requirements(self):
         create, update = self.build()
+        self.assertEqual(create["identifier"], self.meta["id"])
+        self.assertNotIn("id", create)
+        self.assertNotIn("identifier", update)
         for field in self.meta:
-            self.assertEqual(create[field], self.meta[field])
+            if field != "id":
+                self.assertEqual(create[field], self.meta[field])
         self.assertNotIn("website", create)
         self.assertNotIn("homepage_url", create)
         self.assertNotIn("id", update)
         self.assertEqual(create["releases"][0]["requires"], self.meta["requires"])
         self.assertNotIn("min_fossbilling_version", create["releases"][0])
         self.assertEqual(create["readme"], "# Example\n")
-        self.assertEqual(create, {**update, "id": "example_module"})
+        self.assertEqual(create, {**update, "identifier": "example_module"})
 
     def test_optional_homepage_and_icon(self):
         self.meta["homepage_url"] = "https://example.com"
