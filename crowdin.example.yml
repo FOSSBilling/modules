@@ -1,0 +1,15 @@
+# Install in FOSSBilling/modules after review, using the separate Modules project.
+# Supply its project ID and token through the environment.
+project_id_env: CROWDIN_MODULES_PROJECT_ID
+api_token_env: CROWDIN_MODULES_PERSONAL_TOKEN
+base_url: https://fossbilling.api.crowdin.com
+base_path: .
+preserve_hierarchy: true
+files:
+  - source: /Branding/locale/branding.pot
+    translation: /Branding/locale/%locale_with_underscore%/LC_MESSAGES/branding.po
+  - source: /Cookieconsent/locale/cookieconsent.pot
+    translation: /Cookieconsent/locale/%locale_with_underscore%/LC_MESSAGES/cookieconsent.po
+pull_request_title: '[Automated] Module translations'
+pull_request_labels:
+  - crowdin
