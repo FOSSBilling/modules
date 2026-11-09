@@ -12,7 +12,8 @@ layout (`Branding/` for id `branding`):
 Branding/
   manifest.json   # module manifest, v1 spec (required)
   README.md       # becomes the extensions directory readme (required)
-  Service.php, Api/, Controller/, templates/, icon.svg, ...
+  icon.svg        # optional package icon; at most one of icon.svg, icon.png, icon.webp, icon.avif
+  Service.php, Api/, Controller/, templates/, ...
 ```
 
 `manifest.json` follows the v1 spec (`manifest_version: 1`,
@@ -26,7 +27,7 @@ Tag the release `<extension-id>-v<semver>` (e.g. `branding-v0.8.9`, version
 matching the package's `manifest.json`) and attach the distributable
 `.zip` as a release asset. The zip must contain the package directory
 contents at the archive root, with no wrapper folder, so it installs as-is.
-Publishing a release runs `.github/workflows/publish.yml`, which sends the manifest v1 fields directly to the extensions API and approves the new revision. `type: "module"`, string licenses, optional `homepage_url`, package-relative `icon_url`, author metadata, and the complete `requires` object are preserved. A manual run is available via `workflow_dispatch` with the same tag. Both triggers read package files from that tag, while using publisher tooling from the reviewed workflow ref.
+Publishing a release runs `.github/workflows/publish.yml`, which sends the manifest v1 fields directly to the extensions API and approves the new revision. `type: "module"`, string licenses, optional `homepage_url`, author metadata, and the complete `requires` object are preserved. A manual run is available via `workflow_dispatch` with the same tag. Both triggers read package files from that tag, while using publisher tooling from the reviewed workflow ref.
 
 FOSSBilling, PHP, and module constraints are retained verbatim, including compound Composer ranges. Each release stores its own requirements. Deploy the API manifest migration and matching extensions site before running this publisher; it refuses history without `requires` instead of discarding compatibility information.
 

@@ -24,9 +24,9 @@ use UnexpectedValueException;
  * Validates package manifest.json files against the manifest JSON schema plus
  * project-specific checks that the schema cannot express.
  *
- * Mirrors the Validator in FOSSBilling/FOSSBilling tools; the package discovery
- * and icon rules are specific to this repository (published extensions carry a
- * package-relative `icon_url`, and only `tools` is not a package).
+ * Mirrors the Validator in FOSSBilling/FOSSBilling tools; the package
+ * discovery filter is specific to this repository (only `tools` is not a
+ * package).
  */
 final readonly class Validator
 {
@@ -99,12 +99,13 @@ final readonly class Validator
                     $errors[] = $field . ' must be an http(s) URL';
                 }
             }
-            if (isset($m['icon_url'])) {
-                $icon = $m['icon_url'];
-                $resolved = realpath($dir . '/' . $icon) ?: $dir . '/' . $icon;
-                $base = realpath($dir);
-                if (!is_file($dir . '/' . $icon) || $base === false || !str_starts_with($resolved, $base . DIRECTORY_SEPARATOR)) {
-                    $errors[] = 'icon_url target missing or escapes package dir';
+            $icons = array_filter(['icon.svg', 'icon.png', 'icon.webp', 'icon.avif'], static fn ($icon): bool => is_file($dir . '/' . $icon));
+            if (count($icons) > 1) {
+                $errors[] = 'include only one package icon: icon.svg, icon.png, icon.webp or icon.avif';
+            }
+            foreach (['icon.svg', 'icon.png', 'icon.webp', 'icon.avif'] as $icon) {
+                if (is_link($dir . '/' . $icon)) {
+                    $errors[] = 'package icons must not be symbolic links';
                 }
             }
 

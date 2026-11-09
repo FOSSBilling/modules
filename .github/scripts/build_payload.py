@@ -263,10 +263,6 @@ def main() -> None:
         "version": version,
         "download_url": download_url,
     }
-    icon_url = meta.get("icon_url", "")
-    if isinstance(icon_url, str) and icon_url:
-        content["icon_url"] = icon_url
-
     if "homepage_url" in meta:
         content["homepage_url"] = meta["homepage_url"]
 

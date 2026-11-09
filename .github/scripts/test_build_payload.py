@@ -30,7 +30,7 @@ class PublisherTests(unittest.TestCase):
             "manifest_version": 1, "id": "example_module", "type": "module",
             "name": "Example", "description": "Example module", "version": "1.2.3",
             "author": {"name": "Author", "url": "https://example.com"},
-            "license": "MIT OR Apache-2.0", "icon_url": "assets/icon.svg",
+            "license": "MIT OR Apache-2.0",
             "requires": {"fossbilling": "^0.8.9 || ^1.0", "php": ">=8.3 <9", "modules": {"branding": "^1.2"}},
         }
         (self.package / "README.md").write_text("# Example\n")
@@ -61,11 +61,12 @@ class PublisherTests(unittest.TestCase):
         self.assertEqual(create["readme"], "# Example\n")
         self.assertEqual(create, {**update, "identifier": "example_module"})
 
-    def test_optional_homepage_and_icon(self):
+    def test_optional_homepage(self):
         self.meta["homepage_url"] = "https://example.com"
-        del self.meta["icon_url"]
         create, _ = self.build()
         self.assertEqual(create["homepage_url"], "https://example.com")
+        # icon_url is gone from the payload contract: icons ship as
+        # `<Name>/icon.<ext>` files and are not directory metadata.
         self.assertNotIn("icon_url", create)
 
     def test_reruns_replace_the_same_version_and_preserve_other_requirements(self):
