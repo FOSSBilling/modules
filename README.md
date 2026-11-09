@@ -21,6 +21,25 @@ Branding/
 [`manifest.schema.json`](./manifest.schema.json); every package is
 validated against it (plus semantic checks via `tools/bin/console manifest:validate`) by CI.
 
+## Translations
+
+Module translations will use a separate **FOSSBilling Modules** Crowdin project, starting with Branding and Cookieconsent. The inactive [configuration example](./crowdin.example.yml) keeps each module's template and translations together:
+
+```text
+Branding/locale/branding.pot
+Branding/locale/<locale>/LC_MESSAGES/branding.po
+Cookieconsent/locale/cookieconsent.pot
+Cookieconsent/locale/<locale>/LC_MESSAGES/cookieconsent.po
+```
+
+Use the existing [translation tooling](https://github.com/FOSSBilling/FOSSBilling/blob/main/tools/i18n/README.md) to extract, validate and compile translations.
+
+The example needs `CROWDIN_MODULES_PROJECT_ID` and `CROWDIN_MODULES_PERSONAL_TOKEN` for the separate Modules project. Existing core project 4 remains owned by `FOSSBilling/locale`.
+
+Before activation, create the Modules project, review source and target languages, translator access and shared translation memory, and import and validate the existing translations. Carry out that one-time migration directly. PO imports do not preserve Crowdin approval state or full history; retain the original project for attribution and review imports before approval.
+
+The example is not read by a workflow. Installing it as `crowdin.yml`, connecting Crowdin and enabling synchronization are separate activation steps. Module releases and publication remain separate from this configuration preparation.
+
 ## Releasing
 
 Tag the release `<extension-id>-v<semver>` (e.g. `branding-v0.8.9`, version
