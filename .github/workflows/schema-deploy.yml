@@ -25,7 +25,7 @@ jobs:
         run: composer install --no-progress --no-interaction --working-dir=tools
 
       - name: Validate Manifest
-        run: php tools/validate.php
+        run: tools/bin/console manifest:validate
 
       - name: Upload Manifest Schema to R2
         env:
