@@ -108,6 +108,8 @@ class PublisherTests(unittest.TestCase):
         self.meta["homepage_url"] = "https://example.com"
         create, _ = self.build()
         self.assertEqual(create["homepage_url"], "https://example.com")
+        # icon_url is gone from the payload contract: icons ship as
+        # `<Name>/icon.<ext>` files and are not directory metadata.
         self.assertNotIn("icon_url", create)
 
     def test_icons_are_discovered_without_manifest_metadata(self):

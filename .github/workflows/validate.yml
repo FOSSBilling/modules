@@ -21,7 +21,7 @@ jobs:
         run: composer install --no-progress --no-interaction --working-dir=tools
         
       - name: Validate Manifest
-        run: php tools/validate.php
+        run: tools/bin/console manifest:validate
 
       - name: Test release tooling
         run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'

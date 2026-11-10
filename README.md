@@ -12,13 +12,14 @@ layout (`Branding/` for id `branding`):
 Branding/
   manifest.json   # module manifest, v1 spec (required)
   README.md       # becomes the extensions directory readme (required)
-  Service.php, Api/, Controller/, templates/, icon.svg, ...
+  icon.svg        # optional package icon; at most one of icon.svg, icon.png, icon.webp, icon.avif
+  Service.php, Api/, Controller/, templates/, ...
 ```
 
 `manifest.json` follows the v1 spec (`manifest_version: 1`,
 `type: "module"`). The canonical spec is
 [`manifest.schema.json`](./manifest.schema.json); every package is
-validated against it (plus semantic checks in `tools/validate.php`) by CI.
+validated against it (plus semantic checks via `tools/bin/console manifest:validate`) by CI.
 
 ## Releasing
 
