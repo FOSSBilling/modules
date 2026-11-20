@@ -22,6 +22,7 @@ release entries reference the returned immutable artifact and SHA-256.
 Usage: build_payload.py <extension_id> <version> <tag>
 """
 
+import hashlib
 import json
 import os
 import re
@@ -30,6 +31,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -37,6 +39,7 @@ from resolve_release import parse_release_tag
 
 
 MAX_CONTENT_BYTES = 256 * 1024
+API_USER_AGENT = "FOSSBilling-Modules-Publisher/1.0"
 
 # Extensions API cap on releases per extension (ExtensionContentSchema); older
 # entries past this are dropped from the submitted history.
@@ -80,7 +83,7 @@ def fetch_existing_releases(ext_id: str) -> list | None:
 
     http_request = urllib.request.Request(
         f"{api_base.rstrip('/')}/extensions/{ext_id}",
-        headers={"Authorization": f"Bearer {api_token}"},
+        headers={"Authorization": f"Bearer {api_token}", "User-Agent": API_USER_AGENT},
     )
     try:
         with urllib.request.urlopen(http_request, timeout=30) as response:
@@ -117,14 +120,15 @@ def merge_releases(new_release: dict, history: list) -> list:
     return retained
 
 
-def api_json(path: str, data: bytes | None = None, content_type: str | None = None, *, timeout: float = 60) -> dict:
+def api_json(path: str, body: dict | None = None, *, timeout: float = 60) -> dict:
     token = os.environ.get("API_TOKEN", "")
     base = os.environ.get("API_BASE_URL", "").rstrip("/")
     if not token or not base:
         fail("API_TOKEN and API_BASE_URL are required to build directory packages")
-    headers = {"Authorization": f"Bearer {token}"}
-    if content_type:
-        headers["Content-Type"] = content_type
+    headers = {"Authorization": f"Bearer {token}", "User-Agent": API_USER_AGENT}
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+    data = json.dumps(body).encode() if body is not None else None
     request = urllib.request.Request(base + path, data=data, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -136,7 +140,7 @@ def api_json(path: str, data: bytes | None = None, content_type: str | None = No
     except (urllib.error.URLError, TimeoutError, ValueError) as exc:
         fail(f"Package API request failed: {exc}")
     if not isinstance(result, dict):
-        fail("Package API returned no artifact metadata")
+        fail("Package API response is missing its result")
     return result
 
 
@@ -153,20 +157,44 @@ def build_package(manifest: dict, source_url: str) -> dict:
         fail(f"Source ZIP download failed: {exc}")
     if len(source) > 5 * 1024 * 1024:
         fail("Source ZIP exceeds the 5 MiB package limit")
-    boundary = "package-" + uuid.uuid4().hex
-    data = (
-        f'--{boundary}\r\nContent-Disposition: form-data; name="manifest"\r\nContent-Type: application/json\r\n\r\n'.encode()
-        + json.dumps(manifest, ensure_ascii=False).encode()
-        + f'\r\n--{boundary}\r\nContent-Disposition: form-data; name="source"; filename="source.zip"\r\nContent-Type: application/zip\r\n\r\n'.encode()
-        + source + f'\r\n--{boundary}--\r\n'.encode()
+    if not source:
+        fail("Source ZIP is empty")
+    reservation = api_json(
+        "/package-uploads",
+        {"manifest": manifest, "bytes": len(source), "sha256": hashlib.sha256(source).hexdigest()},
     )
-    job = api_json("/packages", data, f"multipart/form-data; boundary={boundary}")
+    if reservation.get("kind") == "job":
+        job = reservation.get("job")
+    else:
+        try:
+            if reservation.get("kind") != "upload":
+                raise ValueError()
+            upload_id = str(uuid.UUID(reservation["id"]))
+            url = urllib.parse.urlsplit(reservation["url"])
+            headers = reservation["headers"]
+            if url.scheme != "https" or not url.hostname or url.username or url.password or not isinstance(headers, dict):
+                raise ValueError()
+            request = urllib.request.Request(url.geturl(), source, headers, method="PUT")
+        except (KeyError, ValueError, TypeError, AttributeError):
+            fail("Package API returned an invalid upload reservation")
+        try:
+            with urllib.request.urlopen(request, timeout=60):
+                pass
+        except urllib.error.HTTPError as exc:
+            with exc:
+                fail(f"Source ZIP upload failed: HTTP {exc.code}")
+        except (urllib.error.URLError, TimeoutError):
+            fail("Source ZIP upload failed")
+        job = api_json("/packages", {"upload_id": upload_id})
+    if not isinstance(job, dict):
+        fail("Package API returned no processing job")
     try:
         job_id = str(uuid.UUID(job["id"]))
     except (KeyError, ValueError, TypeError, AttributeError):
         fail("Package API returned an invalid job ID")
     deadline = time.monotonic() + 180
     artifact = None
+    interval = 1
     while True:
         if job.get("id") != job_id or job.get("extension_identifier") != manifest["id"]:
             fail("Package processing job does not match the submitted extension")
@@ -182,13 +210,14 @@ def build_package(manifest: dict, source_url: str) -> dict:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
-        time.sleep(min(1, remaining))
+        time.sleep(min(interval, remaining))
+        interval = min(interval + 1, 5)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
-        job = api_json(f"/package-jobs/{job_id}", timeout=min(60, remaining))
+        job = api_json(f"/packaging-jobs/{job_id}", timeout=min(60, remaining))
     if not isinstance(artifact, dict):
-        fail(f"Package job {job_id} is still processing; retry publishing to reuse it")
+        fail(f"Packaging job {job_id} is still processing; retry publishing to reuse it")
     try:
         artifact_id = str(uuid.UUID(artifact["id"]))
     except (KeyError, ValueError, TypeError, AttributeError):

@@ -29,8 +29,10 @@ matching the package's `manifest.json`) and attach the distributable
 contents at the archive root, with no wrapper folder, so it installs as-is.
 Publishing runs the trusted tooling from `.github/workflows/publish.yml` against
 package metadata checked out from the release tag. It uploads the single GitHub
-ZIP asset and manifest to `POST /packages`; the directory queues validation and package preparation, returning a private job ID.
-The publisher polls that job until it has an immutable artifact ID, SHA-256 and
+ZIP asset by reserving an upload with `POST /package-uploads`. It sends the ZIP
+to private storage using the returned PUT URL, then confirms it with
+`POST /packages` to get a private job ID.
+The publisher polls `GET /packaging-jobs/{jobId}` until it has an immutable artifact ID, SHA-256 and
 download URL. A failed or timed-out job stops publication; a retry reuses queued
 or completed work. The submitted
 release references those values, preserving earlier managed artifacts and

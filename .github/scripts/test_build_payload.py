@@ -8,7 +8,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 SPEC = importlib.util.spec_from_file_location("publisher", Path(__file__).with_name("build_payload.py"))
 publisher = importlib.util.module_from_spec(SPEC)
@@ -200,39 +200,84 @@ class PackageApiTests(unittest.TestCase):
         self.artifact = {"id": "134cf413-b5ab-4f57-b2ad-520020af880d", "sha256": "a" * 64, "manifest": self.manifest, "download_url": "https://api.example.test/extensions/v2/packages/134cf413-b5ab-4f57-b2ad-520020af880d/download"}
         self.source = "https://github.com/FOSSBilling/modules/releases/download/example-v1.0.0/source.zip"
 
-    def test_uploads_the_exact_source_and_manifest_with_auth_only_on_the_api_call(self):
+    def test_reserves_and_confirms_via_the_api_with_the_zip_sent_only_to_storage(self):
         calls = []
+        upload_id = "33333333-3333-4333-8333-333333333333"
+        job = {"id": "44444444-4444-4444-8444-444444444444", "extension_identifier": "example", "status": "ready", "artifact": self.artifact}
+        upload_url = "https://storage.example.test/object?signature=test"
+
         def open_url(request, **kwargs):
             calls.append(request)
-            return io.BytesIO(b"source ZIP" if isinstance(request, str) else json.dumps({"result": {"id":"44444444-4444-4444-8444-444444444444","extension_identifier":"example","status":"ready","artifact":self.artifact}}).encode())
+            if isinstance(request, str):
+                return io.BytesIO(b"source ZIP")
+            if request.get_method() == "PUT":
+                return io.BytesIO()
+            result = (
+                {"kind": "upload", "id": upload_id, "url": upload_url, "headers": {"Content-Type": "application/zip"}}
+                if request.full_url.endswith("/package-uploads")
+                else job
+            )
+            return io.BytesIO(json.dumps({"result": result}).encode())
+
         with patch.object(publisher.urllib.request, "urlopen", side_effect=open_url):
             self.assertEqual(publisher.build_package(self.manifest, self.source), self.artifact)
-        self.assertEqual(calls[0], self.source)
-        self.assertEqual(calls[1].full_url, "https://api.example.test/extensions/v2/packages")
-        self.assertEqual(calls[1].get_header("Authorization"), "Bearer test-token")
-        self.assertIn(b'name="manifest"', calls[1].data)
-        self.assertIn(json.dumps(self.manifest).encode(), calls[1].data)
-        self.assertIn(b"source ZIP", calls[1].data)
+        download, reserve, upload, confirm = calls
+        self.assertEqual(download, self.source)
+        self.assertEqual(reserve.full_url, "https://api.example.test/extensions/v2/package-uploads")
+        self.assertEqual(reserve.get_header("Authorization"), "Bearer test-token")
+        self.assertEqual(json.loads(reserve.data), {
+            "manifest": self.manifest, "bytes": len(b"source ZIP"),
+            "sha256": publisher.hashlib.sha256(b"source ZIP").hexdigest(),
+        })
+        self.assertEqual(upload.full_url, upload_url)
+        self.assertEqual(upload.get_method(), "PUT")
+        self.assertEqual(upload.data, b"source ZIP")
+        self.assertIsNone(upload.get_header("Authorization"))
+        self.assertEqual(upload.get_header("Content-type"), "application/zip")
+        self.assertEqual(confirm.full_url, "https://api.example.test/extensions/v2/packages")
+        self.assertEqual(confirm.get_header("Authorization"), "Bearer test-token")
+        self.assertEqual(json.loads(confirm.data), {"upload_id": upload_id})
 
     def test_polls_a_queued_package_before_returning_the_artifact(self):
         job = {"id": "44444444-4444-4444-8444-444444444444", "extension_identifier": "example", "status": "queued", "artifact": None}
         ready = {**job, "status": "ready", "artifact": self.artifact}
-        with patch.object(publisher.urllib.request, "urlopen", return_value=io.BytesIO(b"ZIP")), patch.object(publisher, "api_json", side_effect=[job, {**job, "status": "processing"}, ready]) as request, patch.object(publisher.time, "sleep"):
+        with patch.object(publisher.urllib.request, "urlopen", return_value=io.BytesIO(b"ZIP")), patch.object(publisher, "api_json", side_effect=[{"kind": "job", "job": job}, {**job, "status": "processing"}, ready]) as request, patch.object(publisher.time, "sleep") as sleep:
             self.assertEqual(publisher.build_package(self.manifest, self.source), self.artifact)
-        self.assertEqual(request.call_args_list[-1].args, ("/package-jobs/" + job["id"],))
+        self.assertEqual(request.call_args_list[-1].args, ("/packaging-jobs/" + job["id"],))
+        self.assertEqual(sleep.call_args_list, [call(1), call(2)])
 
     def test_stops_polling_at_the_deadline(self):
         job = {"id": "44444444-4444-4444-8444-444444444444", "extension_identifier": "example", "status": "queued"}
-        with patch.object(publisher.urllib.request, "urlopen", return_value=io.BytesIO(b"ZIP")), patch.object(publisher, "api_json", return_value=job) as request, patch.object(publisher.time, "monotonic", side_effect=[0, 179, 179.5, 180]), patch.object(publisher.time, "sleep"):
+        with patch.object(publisher.urllib.request, "urlopen", return_value=io.BytesIO(b"ZIP")), patch.object(publisher, "api_json", side_effect=[{"kind": "job", "job": job}, job]) as request, patch.object(publisher.time, "monotonic", side_effect=[0, 179, 179.5, 180]), patch.object(publisher.time, "sleep"):
             with self.assertRaises(SystemExit):
                 publisher.build_package(self.manifest, self.source)
         self.assertEqual(request.call_count, 2)
         self.assertEqual(request.call_args.kwargs, {"timeout": 0.5})
 
     def test_failed_job_stops_publishing(self):
-        job = {"id": "44444444-4444-4444-8444-444444444444", "extension_identifier": "example", "status": "failed", "error": {"message": "Invalid archive"}}
-        with patch.object(publisher.urllib.request, "urlopen", return_value=io.BytesIO(b"ZIP")), patch.object(publisher, "api_json", return_value=job), self.assertRaises(SystemExit):
+        job = {"id": "44444444-4444-4444-8444-444444444444", "extension_identifier": "example", "status": "queued"}
+        failed = {**job, "status": "failed", "error": {"message": "Invalid archive"}}
+        with (
+            patch.object(publisher.urllib.request, "urlopen", return_value=io.BytesIO(b"ZIP")),
+            patch.object(publisher, "api_json", side_effect=[{"kind": "job", "job": job}, failed]) as request,
+            patch.object(publisher.time, "sleep"),
+            self.assertRaises(SystemExit),
+        ):
             publisher.build_package(self.manifest, self.source)
+        self.assertEqual(request.call_args.args, ("/packaging-jobs/" + job["id"],))
+
+    def test_failed_put_stops_before_confirmation(self):
+        upload_url = "https://storage.example.test/object?signature=test"
+        result = {"kind": "upload", "id": "33333333-3333-4333-8333-333333333333", "url": upload_url, "headers": {}}
+        rejection = publisher.urllib.error.HTTPError(upload_url, 403, "Forbidden", {}, None)
+        with (
+            patch.object(publisher.urllib.request, "urlopen", side_effect=[io.BytesIO(b"ZIP"), rejection]),
+            patch.object(publisher, "api_json", return_value=result) as request,
+            self.assertRaises(SystemExit),
+        ):
+            publisher.build_package(self.manifest, self.source)
+        request.assert_called_once()
+        self.assertEqual(request.call_args.args[0], "/package-uploads")
 
     def test_rejects_oversized_sources_before_uploading(self):
         with patch.object(publisher.urllib.request, "urlopen", return_value=io.BytesIO(b"x" * (5 * 1024 * 1024 + 1))) as request:
@@ -243,7 +288,7 @@ class PackageApiTests(unittest.TestCase):
     def test_rejects_mismatched_artifact_metadata_and_foreign_download_urls(self):
         for replacement in [{"manifest": {}}, {"sha256": "invalid"}, {"download_url": "https://other.test/package.zip"}]:
             artifact = {**self.artifact, **replacement}
-            with self.subTest(replacement=replacement), patch.object(publisher.urllib.request, "urlopen", return_value=io.BytesIO(b"ZIP")), patch.object(publisher, "api_json", return_value={"id":"44444444-4444-4444-8444-444444444444","extension_identifier":"example","status":"ready","artifact":artifact}), self.assertRaises(SystemExit):
+            with self.subTest(replacement=replacement), patch.object(publisher.urllib.request, "urlopen", return_value=io.BytesIO(b"ZIP")), patch.object(publisher, "api_json", return_value={"kind":"job","job":{"id":"44444444-4444-4444-8444-444444444444","extension_identifier":"example","status":"ready","artifact":artifact}}), self.assertRaises(SystemExit):
                 publisher.build_package(self.manifest, self.source)
 
 if __name__ == "__main__":
