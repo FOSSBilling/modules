@@ -26,9 +26,10 @@ validated against it (plus semantic checks via `tools/bin/console manifest:valid
 Tag the release `<extension-id>-v<semver>` (e.g. `branding-v0.8.9`, version
 matching the package's `manifest.json`) and attach the distributable
 `.zip` as a release asset. The zip must contain the package directory
-contents at the archive root, with no wrapper folder, so it installs as-is.
+contents and `manifest.json` at the archive root, with no wrapper folder.
+The directory validates and serves the original ZIP bytes.
 Publishing runs the trusted tooling from `.github/workflows/publish.yml` against
-package metadata checked out from the release tag. It uploads the single GitHub
+the package source checked out from the release tag. It uploads the single GitHub
 ZIP asset by reserving an upload with `POST /package-uploads`. It sends the ZIP
 to private storage using the returned PUT URL, then confirms it with
 `POST /packages` to get a private job ID.
@@ -47,15 +48,15 @@ same developer. Package ZIPs remain private until the revision is approved.
 
 Stable releases become the selected latest release. Prereleases retain the
 previous managed selection when one exists; the listing's manifest metadata
-continues to describe that selected package. A rerun of a version must upload
-identical source bytes. The API reuses an identical artifact and rejects changed
-source bytes for that version. Publish changed files under a new version.
+comes from that selected ZIP. The existing directory description is preserved.
+Pending uploads can be replaced. After publication, retry with the same ZIP or
+publish changed files under a new version.
 
 The publisher refuses source ZIPs over 5 MiB, ambiguous releases with multiple ZIP
 assets, unexpected artifact URLs and mismatched manifests. FOSSBilling, PHP and
 module constraints remain unchanged. Existing release history may omit PHP;
 new module manifests must still declare it. The readme, source and changelog links
-remain directory metadata outside the generated manifest.
+are managed independently in the directory.
 
 Publishing reads existing public release history before submitting. A public
 404 may mean a delisted or unpublished extension: a subsequent create conflict

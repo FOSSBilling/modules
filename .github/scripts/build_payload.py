@@ -16,8 +16,8 @@ version from it. The entry is prepended to the extension's already
 published releases so the API keeps its changelog history. Publishing
 requires ``API_TOKEN`` and ``API_BASE_URL``.
 
-The source ZIP and manifest are built by the package API before submission;
-release entries reference the returned immutable artifact and SHA-256.
+The API validates the release ZIP and reads its root manifest before submission.
+Release entries reference the original ZIP bytes and their SHA-256.
 
 Usage: build_payload.py <extension_id> <version> <tag>
 """
@@ -25,7 +25,6 @@ Usage: build_payload.py <extension_id> <version> <tag>
 import hashlib
 import json
 import os
-import re
 from pathlib import Path
 import subprocess
 import sys
@@ -44,8 +43,6 @@ API_USER_AGENT = "FOSSBilling-Modules-Publisher/1.0"
 # Extensions API cap on releases per extension (ExtensionContentSchema); older
 # entries past this are dropped from the submitted history.
 MAX_RELEASES = 100
-
-MANIFEST_TYPES = {"module", "theme", "payment-gateway", "server-manager", "domain-registrar", "translation"}
 
 
 def fail(message: str) -> None:
@@ -74,8 +71,8 @@ def find_package_dir(ext_id: str) -> str:
     return matches[0]
 
 
-def fetch_existing_releases(ext_id: str) -> list | None:
-    """Read published releases; only a 404 means the extension is new."""
+def fetch_existing_extension(ext_id: str) -> dict | None:
+    """Read the public listing and its release history."""
     api_token = os.environ.get("API_TOKEN", "")
     api_base = os.environ.get("API_BASE_URL", "")
     if not api_token or not api_base:
@@ -100,7 +97,7 @@ def fetch_existing_releases(ext_id: str) -> list | None:
         fail(f"Extensions API response for '{ext_id}' has no releases list")
     if not all(isinstance(entry, dict) for entry in releases):
         fail(f"Extensions API response for '{ext_id}' has a malformed release entry")
-    return releases
+    return result
 
 
 def merge_releases(new_release: dict, history: list) -> list:
@@ -124,7 +121,7 @@ def api_json(path: str, body: dict | None = None, *, timeout: float = 60) -> dic
     token = os.environ.get("API_TOKEN", "")
     base = os.environ.get("API_BASE_URL", "").rstrip("/")
     if not token or not base:
-        fail("API_TOKEN and API_BASE_URL are required to build directory packages")
+        fail("API_TOKEN and API_BASE_URL are required to validate directory packages")
     headers = {"Authorization": f"Bearer {token}", "User-Agent": API_USER_AGENT}
     if body is not None:
         headers["Content-Type"] = "application/json"
@@ -144,9 +141,9 @@ def api_json(path: str, body: dict | None = None, *, timeout: float = 60) -> dic
     return result
 
 
-def build_package(manifest: dict, source_url: str) -> dict:
+def validate_package(target: dict, source_url: str) -> dict:
     if not os.environ.get("API_TOKEN") or not os.environ.get("API_BASE_URL"):
-        fail("API_TOKEN and API_BASE_URL are required to build directory packages")
+        fail("API_TOKEN and API_BASE_URL are required to validate directory packages")
     expected = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/"
     if not source_url.startswith(expected):
         fail("Source ZIP must be a release asset in this GitHub repository")
@@ -159,9 +156,10 @@ def build_package(manifest: dict, source_url: str) -> dict:
         fail("Source ZIP exceeds the 5 MiB package limit")
     if not source:
         fail("Source ZIP is empty")
+    checksum = hashlib.sha256(source).hexdigest()
     reservation = api_json(
         "/package-uploads",
-        {"manifest": manifest, "bytes": len(source), "sha256": hashlib.sha256(source).hexdigest()},
+        {"target": target, "bytes": len(source), "sha256": checksum},
     )
     if reservation.get("kind") == "job":
         job = reservation.get("job")
@@ -196,7 +194,7 @@ def build_package(manifest: dict, source_url: str) -> dict:
     artifact = None
     interval = 1
     while True:
-        if job.get("id") != job_id or job.get("extension_identifier") != manifest["id"]:
+        if job.get("id") != job_id or job.get("extension_identifier") != target["id"]:
             fail("Package processing job does not match the submitted extension")
         if job.get("status") == "ready":
             artifact = job.get("artifact")
@@ -222,8 +220,9 @@ def build_package(manifest: dict, source_url: str) -> dict:
         artifact_id = str(uuid.UUID(artifact["id"]))
     except (KeyError, ValueError, TypeError, AttributeError):
         fail("Package API returned an invalid artifact ID")
-    if artifact.get("manifest") != manifest or not isinstance(artifact.get("sha256"), str) or not re.fullmatch(r"[a-f0-9]{64}", artifact["sha256"]):
-        fail("Package API artifact does not match the submitted manifest or checksum format")
+    manifest = artifact.get("manifest")
+    if not isinstance(manifest, dict) or any(manifest.get(key) != value for key, value in target.items()) or artifact.get("sha256") != checksum:
+        fail("Package API artifact does not match the uploaded ZIP's identity, version or checksum")
     if artifact.get("download_url") != os.environ["API_BASE_URL"].rstrip("/") + f"/packages/{artifact_id}/download":
         fail("Package API returned an unexpected download URL")
     return artifact
@@ -238,63 +237,14 @@ def main() -> None:
     if target != (ext_id, version):
         fail("Extension id and version must match the release tag")
     ext_dir = find_package_dir(ext_id)
-    manifest_path = os.path.join(ext_dir, "manifest.json")
-    meta = json.loads(Path(manifest_path).read_text())
-
-    if "icon_url" in meta:
-        fail("Remove icon_url from manifest.json; use icon.svg, icon.png, icon.webp or icon.avif at the package root")
-    icons = [Path(ext_dir) / name for name in ("icon.svg", "icon.png", "icon.webp", "icon.avif") if (Path(ext_dir) / name).exists()]
-    if len(icons) > 1 or any(icon.is_symlink() or not icon.is_file() for icon in icons):
-        fail("Include at most one regular package icon")
-
-    for field in (
-        "manifest_version",
-        "type",
-        "id",
-        "name",
-        "version",
-        "description",
-        "author",
-        "license",
-        "requires",
-    ):
-        if field not in meta:
-            fail(f"{manifest_path} is missing required field '{field}'")
-    if meta["manifest_version"] != 1:
-        fail(f"{manifest_path} uses unsupported manifest_version {meta['manifest_version']!r} (this script handles v1)")
-    if not isinstance(meta.get("author"), dict) or not meta["author"].get("name"):
-        fail(f"{manifest_path} author must be an object with a name")
-    if not isinstance(meta.get("requires"), dict):
-        fail(f"{manifest_path} requires must be an object")
-    if not isinstance(meta["requires"].get("fossbilling"), str):
-        fail(f"{manifest_path} requires.fossbilling must be a version constraint string")
-
-    if meta["type"] not in MANIFEST_TYPES:
-        fail(f"{manifest_path} has unsupported type {meta['type']!r} for extension submission")
-    if meta["version"] != version:
-        fail(f"{manifest_path} version {meta['version']!r} does not match release tag version {version!r}")
-
-    requires = meta["requires"]
-    if not isinstance(requires.get("php"), str) or not requires["php"].strip():
-        fail(f"{manifest_path} requires.php must be a non-empty version constraint string")
-
-    license_name = meta["license"]
-    if not isinstance(license_name, str) or not license_name.strip():
-        fail(f"{manifest_path} license must be a non-empty license expression")
-
-    readme_path = os.path.join(ext_dir, "README.md")
-    if os.path.isfile(readme_path):
-        readme = Path(readme_path).read_text()
+    readme_path = Path(ext_dir) / "README.md"
+    readme = readme_path.read_text() if readme_path.is_file() else None
+    if readme is not None:
         if not readme.strip():
             fail(f"{readme_path} is empty")
-    else:
-        readme = meta["description"]
-    if not readme.strip():
-        fail(f"{manifest_path} has an empty description and no README.md to fall back on")
-
-    # Zod measures JavaScript strings in UTF-16 code units, not code points.
-    if len(readme.encode("utf-16-le")) // 2 > 100_000:
-        fail(f"{readme_path} exceeds the API's 100,000-character README limit")
+        # The API measures JavaScript strings in UTF-16 code units.
+        if len(readme.encode("utf-16-le")) // 2 > 100_000:
+            fail(f"{readme_path} exceeds the API's 100,000-character README limit")
 
     release = json.loads(
         subprocess.run(
@@ -320,9 +270,18 @@ def main() -> None:
         )
     if len(zips) != 1:
         fail("Release must have exactly one source ZIP asset")
-    history = fetch_existing_releases(ext_id)
-    artifact = build_package(meta, zips[0])
+    existing = fetch_existing_extension(ext_id)
+    history = existing["releases"] if existing else []
+    artifact = validate_package({"id": ext_id, "version": version}, zips[0])
     download_url = artifact["download_url"]
+    archive_manifest = artifact["manifest"]
+    package_requires = archive_manifest["requires"]
+    if not package_requires.get("php", "").strip():
+        fail("The release ZIP manifest must declare requires.php")
+    if readme is None:
+        readme = archive_manifest["description"]
+        if not readme.strip():
+            fail("The release ZIP manifest needs a description when no README is present")
 
     # The API keys releases by plain semver version, not by git tag:
     # sorting, latest-release resolution, and the directory's edit form
@@ -332,19 +291,25 @@ def main() -> None:
         "tag": version,
         "date": published_at[:10] if published_at else "",
         "download_url": download_url,
-        "requires": requires,
+        "requires": package_requires,
         "artifact_id": artifact["id"],
         "sha256": artifact["sha256"],
     }
     if html_url:
         new_release["changelog_url"] = html_url
 
-    other_releases = [entry for entry in history or [] if entry.get("tag") != version]
-    # Stable publishes become latest. Prereleases retain an existing selection.
-    previous = next((entry for entry in other_releases if entry.get("is_latest")), None)
-    previous = previous or next((entry for entry in other_releases if "-" not in entry["tag"].split("+", 1)[0]), None) or next(iter(other_releases), None)
-    selected_manifest = meta
-    current = next((entry for entry in history or [] if entry.get("tag") == version), None)
+    managed = [
+        entry for entry in history
+        if entry.get("artifact_id") and entry["tag"] != version
+    ]
+    # An external release cannot supply the manifest for a managed listing.
+    previous = (
+        next((entry for entry in managed if entry.get("is_latest")), None)
+        or next((entry for entry in managed if "-" not in entry["tag"].split("+", 1)[0]), None)
+        or next(iter(managed), None)
+    )
+    selected_manifest = archive_manifest
+    current = next((entry for entry in history if entry.get("tag") == version), None)
     if (current and current.get("is_latest")) or "-" not in version.split("+", 1)[0] or previous is None:
         new_release["is_latest"] = True
     else:
@@ -352,12 +317,12 @@ def main() -> None:
         previous["is_latest"] = True
     content = {key: value for key, value in selected_manifest.items() if key != "id"}
     content.update({
-        "releases": merge_releases(new_release, history or []),
+        "releases": merge_releases(new_release, history),
+        "description": (existing or {}).get("description") or selected_manifest["description"],
         "readme": readme,
         "source": {"type": "github", "repo": os.environ.get("GITHUB_REPOSITORY", "FOSSBilling/modules")},
     })
     selected_release = next(entry for entry in content["releases"] if entry.get("is_latest"))
-    content["version"] = selected_release["tag"]
     content["download_url"] = selected_release["download_url"]
 
     create_content = dict(content)
@@ -372,7 +337,7 @@ def main() -> None:
     with open("payload-update.json", "w", encoding="utf-8") as handle:
         json.dump(content, handle, ensure_ascii=False, separators=(",", ":"))
     with open("payload-target.json", "w") as handle:
-        json.dump({"exists": history is not None}, handle)
+        json.dump({"exists": existing is not None}, handle)
     print(f"Built payloads for {ext_id} {version} ({size} bytes)")
 
 
